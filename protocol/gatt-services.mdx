@@ -1,0 +1,52 @@
+---
+title: "GATT service and characteristic layout for Flic 2"
+description: "Service UUID, characteristic handles, ATT MTU negotiation, and the write/notify channel structure used by the Flic 2 BLE protocol."
+---
+
+Flic 2 exposes a single primary GATT service that carries all protocol communication. Two characteristics provide a bidirectional channel: one for writing commands to the button, and one for receiving notifications from it. This page documents the service UUID, characteristic handles, ATT MTU requirements, and how multiple applications share the same notification stream.
+
+## Standard services
+
+The button also exposes standard GAP and GATT services. The Device Name characteristic (read-only) returns the button's serial number in the format:
+
+```text
+Flic XX00-X00000
+```
+
+## Primary service
+
+| Property | Value |
+|---|---|
+| Service UUID | `00420000-8F59-4420-870D-84F3B617E493` |
+
+## Characteristics
+
+| # | UUID | ATT Handle | Properties | Direction |
+|---|---|---|---|---|
+| 1 | `00420001-8F59-4420-870D-84F3B617E493` | `0x0010` | Write Without Response | App → button |
+| 2 | `00420002-8F59-4420-870D-84F3B617E493` | `0x0012` | Notify | Button → app |
+
+Write to characteristic 1 to send commands and requests to the button. Subscribe to notifications on characteristic 2 to receive responses and events from the button.
+
+## ATT MTU negotiation
+
+The maximum ATT MTU supported by Flic 2 is **140 bytes**, which leaves **137 bytes** of usable payload per GATT transaction after the 3-byte ATT header.
+
+The BLE default MTU is 23 bytes. To use a larger MTU you must perform the **Exchange MTU** GATT procedure before sending any protocol packets. If you skip this step all packets are limited to 20 bytes of payload, which requires fragmentation for most protocol messages.
+
+<Warning>
+  Always negotiate MTU before starting the session establishment flow. Sending large packets without MTU negotiation will result in silent truncation or dropped data.
+</Warning>
+
+## Data flow
+
+- **App to button**: write binary packet data to characteristic `0x0010` using Write Without Response.
+- **Button to app**: the button sends binary packet data as notifications on characteristic `0x0012`.
+
+## Multi-app support
+
+The GATT specification has no built-in concept of multiple concurrent clients. When several applications are connected to the same button simultaneously, the host OS delivers notifications to all registered subscribers. Each protocol packet includes a `connId` field that identifies which logical connection — and therefore which app — the packet belongs to. Applications must filter incoming notifications by their own `connId` and ignore packets addressed to other logical connections.
+
+<Info>
+  Responses to requests sent by a specific app are delivered with the matching `connId`. Unsolicited notifications (such as button events) are broadcast to all subscribers and must be filtered client-side.
+</Info>

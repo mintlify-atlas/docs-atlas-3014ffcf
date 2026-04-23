@@ -1,0 +1,84 @@
+---
+title: "Platform libraries for Flic 2 and Flic Duo"
+description: "Official Flic 2 SDKs for iOS, Android, Windows, Linux, and embedded C — links to source repositories, sample projects, and the Flic Hub SDK."
+---
+
+The Flic 2 platform libraries abstract the full BLE protocol stack so you can work with button events through a clean, platform-native API rather than implementing the advertising format, GATT services, packet encoding, and cryptographic verification yourself. Each library handles device discovery, pairing, the full and quick verification flows, connection management, and event delivery. You register callbacks or listeners for the events you care about, and the library takes care of everything underneath.
+
+All libraries are open source and hosted on GitHub under the [50ButtonsEach](https://github.com/50ButtonsEach) organization.
+
+## Choose your platform
+
+<Tabs>
+  <Tab title="iOS">
+    The iOS library (`flic2lib`) supports both Flic 2 and Flic Duo buttons. It provides a manager class that tracks all paired buttons associated with your app and a button class that delivers click events and connection state changes.
+
+    | Resource | Link |
+    |---|---|
+    | Library | [flic2lib-ios](https://github.com/50ButtonsEach/flic2lib-ios) |
+    | Sample project | [flic2lib-ios-sample](https://github.com/50ButtonsEach/flic2lib-ios-sample) |
+
+    The library is distributed as a binary framework. The sample project demonstrates scanning, pairing, and handling button events in a minimal iOS app — a good starting point before integrating into your own project.
+
+    <Tip>
+      The iOS library persists paired button state across app restarts and crashes. You do not need to re-pair after an unexpected termination.
+    </Tip>
+  </Tab>
+
+  <Tab title="Android">
+    The Android library (`flic2lib`) supports both Flic 2 and Flic Duo buttons. It provides the same manager-plus-button object model as the iOS library, adapted to Android's BLE APIs and lifecycle.
+
+    | Resource | Link |
+    |---|---|
+    | Library | [flic2lib-android](https://github.com/50ButtonsEach/flic2lib-android) |
+    | Sample project | [flic2lib-android-sample](https://github.com/50ButtonsEach/flic2lib-android-sample) |
+
+    The library is available as an AAR. The sample project shows how to initialize the manager, start the scan wizard, and listen for button events using the Android callback interface.
+
+    <Tip>
+      Android restricts background BLE scanning. The library respects platform constraints — review the background connection guidance in the library's README before implementing background button support.
+    </Tip>
+  </Tab>
+
+  <Tab title="Windows">
+    The Windows library (`fliclib`) enables Flic 2 integration on Windows desktop and server environments. It uses the Windows BLE APIs and provides a .NET-compatible interface.
+
+    | Resource | Link |
+    |---|---|
+    | Library | [fliclib-windows](https://github.com/50ButtonsEach/fliclib-windows) |
+
+    The repository includes documentation on initializing the client, scanning for buttons, and receiving events. This library is suited for kiosk applications, accessibility tools, desktop automation, and Windows-based IoT scenarios.
+  </Tab>
+
+  <Tab title="Linux">
+    The Linux library (`fliclib`) communicates with Flic 2 buttons directly via the HCI (Host Controller Interface) Bluetooth stack, without requiring BlueZ's higher-level APIs. It runs as a daemon and exposes a socket-based interface that client programs connect to.
+
+    | Resource | Link |
+    |---|---|
+    | Library | [fliclib-linux-hci](https://github.com/50ButtonsEach/fliclib-linux-hci) |
+
+    The repository includes the `flicd` daemon binary, client libraries for several languages, and documentation on the socket protocol. This architecture lets multiple client programs share access to the same buttons through a single daemon process.
+
+    <Info>
+      The Linux library uses HCI directly and may require elevated permissions or specific capability grants depending on your distribution and security configuration.
+    </Info>
+  </Tab>
+
+  <Tab title="Embedded C">
+    The embedded C module (`flic2lib-c-module`) is designed for microcontroller and resource-constrained environments. It implements the Flic 2 protocol in portable C without depending on any specific OS or BLE stack — you provide the BLE transport layer, and the library handles the protocol logic above it.
+
+    | Resource | Link |
+    |---|---|
+    | Library | [flic2lib-c-module](https://github.com/50ButtonsEach/flic2lib-c-module) |
+
+    This module is the right choice when you are integrating Flic 2 into custom hardware, an RTOS environment, or any platform where the other libraries are not available. The repository documents the porting interface you need to implement.
+  </Tab>
+</Tabs>
+
+## Additional resources
+
+Beyond the platform libraries, two additional tools extend what you can build with Flic buttons.
+
+**Flic Hub SDK** — The Flic Hub is a standalone device that connects Flic buttons over BLE and runs JavaScript modules you write. The Hub SDK lets you build integrations that run entirely on the hub hardware without needing a phone or computer in the loop. Documentation and the module runtime are available at [hubsdk.flic.io](https://hubsdk.flic.io).
+
+**Flic Cloud Buttons** — A system for cloud-connected Flic button deployments where button events are delivered over the internet rather than through a local BLE connection. Documentation is available in the [flic-cloud-buttons-documentation](https://github.com/50ButtonsEach/flic-cloud-buttons-documentation) repository on GitHub.

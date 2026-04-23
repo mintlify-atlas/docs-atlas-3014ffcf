@@ -1,97 +1,66 @@
 ---
-title: "Introduction"
-description: "Welcome to the new home for your documentation"
+title: "Flic 2 Developer Documentation"
+description: "Open protocol specification and developer reference for building integrations with Flic 2 and Flic Duo Bluetooth Low Energy smart buttons."
 ---
 
-## Setting up
+Flic 2 and Flic Duo are programmable Bluetooth Low Energy smart buttons with an open protocol. This documentation covers everything you need to build your own integration — from pairing and event handling to the full binary protocol specification and platform-specific libraries.
 
-Get your documentation site up and running in minutes.
-
-<Card
-  title="Start here"
-  icon="rocket"
-  href="/quickstart"
-  horizontal
->
-  Follow our three step quickstart guide.
-</Card>
-
-## Make it yours
-
-Design a docs site that looks great and empowers your users.
-
-<Columns cols={2}>
-  <Card
-    title="Edit locally"
-    icon="pen-to-square"
-    href="/development"
-  >
-    Edit your docs locally and preview them in real time.
+<CardGroup cols={2}>
+  <Card title="Introduction" icon="circle-info" href="/introduction">
+    Learn what Flic 2 is, how the protocol works, and what you can build.
   </Card>
-  <Card
-    title="Customize your site"
-    icon="palette"
-    href="/essentials/settings"
-  >
-    Customize the design and colors of your site to match your brand.
+  <Card title="Technical overview" icon="book" href="/overview-and-terminology">
+    Understand connection states, trigger modes, verification, and key concepts.
   </Card>
-    <Card
-    title="Set up navigation"
-    icon="map"
-    href="/essentials/navigation"
-  >
-    Organize your docs to help users find what they need and succeed with your product.
+  <Card title="Platform libraries" icon="code" href="/platform-libraries">
+    Official SDKs for iOS, Android, Windows, Linux, and embedded C.
   </Card>
-  <Card
-    title="API documentation"
-    icon="terminal"
-    href="/api-reference/introduction"
-  >
-    Auto-generate API documentation from OpenAPI specifications.
+  <Card title="Pairing and connecting" icon="link" href="/guides/pairing-and-connecting">
+    Step-by-step guide to scanning, pairing, and establishing sessions.
   </Card>
-</Columns>
+</CardGroup>
 
-## Create beautiful pages
+## Explore the protocol
 
-Everything you need to create world-class documentation.
+<CardGroup cols={2}>
+  <Card title="Advertising" icon="wifi" href="/protocol/advertising">
+    BLE advertising modes, packet formats, and Public vs Private mode.
+  </Card>
+  <Card title="GATT services" icon="circle-nodes" href="/protocol/gatt-services">
+    Service UUIDs, characteristic handles, and MTU negotiation.
+  </Card>
+  <Card title="Session establishment" icon="shield-halved" href="/protocol/session-establishment">
+    Full verify, quick verify, cryptographic key exchange, and session states.
+  </Card>
+  <Card title="Button event packets" icon="hand-pointer" href="/protocol/button-event-packets">
+    Binary encoding of click, hold, double click, and up/down events.
+  </Card>
+</CardGroup>
 
-<Columns cols={2}>
-  <Card
-    title="Write with MDX"
-    icon="pen-fancy"
-    href="/essentials/markdown"
-  >
-    Use MDX to style your docs pages.
-  </Card>
-  <Card
-    title="Code samples"
-    icon="code"
-    href="/essentials/code"
-  >
-    Add sample code to demonstrate how to use your product.
-  </Card>
-  <Card
-    title="Images"
-    icon="image"
-    href="/essentials/images"
-  >
-    Display images and other media.
-  </Card>
-  <Card
-    title="Reusable snippets"
-    icon="recycle"
-    href="/essentials/reusable-snippets"
-  >
-    Write once and reuse across your docs.
-  </Card>
-</Columns>
+## Flic Duo
 
-## Need inspiration?
+<CardGroup cols={2}>
+  <Card title="Flic Duo overview" icon="toggle-on" href="/protocol/duo/overview">
+    How the Flic Duo protocol extends Flic 2 with dual buttons and gestures.
+  </Card>
+  <Card title="Push-Twist" icon="rotate" href="/protocol/duo/push-twist">
+    Continuous rotation angle events from the Flic Duo twist sensor.
+  </Card>
+</CardGroup>
 
-<Card
-  title="See complete examples"
-  icon="stars"
-  href="https://mintlify.com/customers"
->
-  Browse our showcase of exceptional documentation sites.
-</Card>
+## Quick start
+
+<Steps>
+  <Step title="Choose a platform library">
+    Pick the official Flic library for your target platform — iOS, Android, Windows, Linux, or embedded C. See [Platform Libraries](/platform-libraries) for links and setup instructions.
+  </Step>
+  <Step title="Scan and pair a button">
+    Use the library's scan wizard to discover nearby Flic buttons in Public mode and complete the cryptographic pairing process. See [Pairing and Connecting](/guides/pairing-and-connecting).
+  </Step>
+  <Step title="Subscribe to button events">
+    After pairing, send an `InitButtonEventsLightRequest` packet to begin receiving click, hold, and double-click notifications. See [Button Events](/guides/button-events).
+  </Step>
+  <Step title="Handle events in your app">
+    Parse incoming `ButtonEventNotification` packets using one of the four trigger mode use cases (up/down, click/hold, single/double click, or all three). See [Button Event Packets](/protocol/button-event-packets).
+  </Step>
+</Steps>

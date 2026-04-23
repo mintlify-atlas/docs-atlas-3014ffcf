@@ -1,0 +1,193 @@
+---
+title: "Handling button events from Flic 2 and Flic Duo"
+description: "Subscribe to button events, choose the right trigger mode use case, and correctly process click, hold, and double-click interactions in your integration."
+---
+
+A Flic 2 button can emit five distinct event types — Down, Up, Click, Double Click, and Hold — but your app does not receive all five independently. Instead, you choose a **use case** that determines which combination of events the button delivers, based on the interactions your app needs. Once a session is established, you initialize button event delivery with a single request packet and then decode incoming event notifications using a compact bitfield encoding.
+
+## Five event types
+
+- **Down** — fired the instant the button is physically pressed.
+- **Up** — fired when the button is released.
+- **Click** — a full press-and-release with no hold or double-click.
+- **Double Click** — two clicks in quick succession.
+- **Hold** — the button held down for a sustained period.
+
+## Initializing button events
+
+Send an `InitButtonEventsLightRequest` (opcode 23) after session establishment to start receiving `ButtonEventNotification` packets.
+
+<ParamField path="body.event_count" type="number" required>
+  The number of button events you have already received and acknowledged for this button. Used for deduplication after reconnection. Store this value persistently alongside `boot_id`.
+</ParamField>
+
+<ParamField path="body.boot_id" type="number" required>
+  The boot identifier from the last session. The button resets `event_count` when it reboots; `boot_id` lets you detect reboots and avoid replaying stale events. Store persistently.
+</ParamField>
+
+<ParamField path="body.auto_disconnect_time" type="number" default="511">
+  Idle time in seconds before the button disconnects automatically. Valid range is 0–511; `511` disables auto-disconnect. If you enable auto-disconnect, set at least 40 seconds to avoid premature drops during normal use.
+</ParamField>
+
+<ParamField path="body.max_queued_packets" type="number" default="31">
+  Maximum number of event packets the button will queue while disconnected. Valid range is 0–30; `31` means no limit.
+</ParamField>
+
+<ParamField path="body.max_queued_packets_age" type="number" default="0xfffff">
+  Maximum age of queued packets in seconds. Valid range is 0–0xffffe; `0xfffff` means no age limit. Set to `0xfffff` if you want all queued events delivered regardless of age.
+</ParamField>
+
+<Note>
+  Persist `event_count` and `boot_id` to durable storage every time you update them. On reconnection, if the button's `boot_id` has changed, reset your `event_count` to zero before sending `InitButtonEventsLightRequest`.
+</Note>
+
+## Use cases
+
+Choose the use case that matches the interactions your app needs. Each use case determines which events to emit and when to wait before confirming an event.
+
+<Tabs>
+  <Tab title="Up/Down">
+    Use this when your app needs immediate feedback on press and release — for example, a push-to-talk button.
+
+    | Condition | Event to emit |
+    |---|---|
+    | `type == 1` | Down |
+    | `type == 0` | Up |
+
+    ```c
+    if (type == 1) emit(DOWN);
+    if (type == 0) emit(UP);
+    ```
+
+    Both events fire with minimal latency. No acknowledgement is required.
+  </Tab>
+
+  <Tab title="Click/Hold">
+    Use this when your app needs to distinguish a short tap from a sustained press.
+
+    | Condition | Event to emit |
+    |---|---|
+    | `type == 0 && !wasHold` | Click |
+    | `type == 3` | Hold |
+
+    ```c
+    if (type == 3) {
+        emit(HOLD);
+    } else if (type == 0 && !wasHold) {
+        emit(CLICK);
+    }
+    ```
+
+    Send `AckButtonEventsInd` when `type == 0` and `!wasHold` (i.e., on a click up event).
+  </Tab>
+
+  <Tab title="Single/Double Click">
+    Use this when your app needs to distinguish a single tap from two rapid taps.
+
+    | Condition | Event to emit |
+    |---|---|
+    | `(type == 0 && singleClick) \|\| type == 2` | Single Click |
+    | `type == 0 && doubleClick` | Double Click |
+
+    ```c
+    if (type == 2 || (type == 0 && singleClick)) {
+        emit(SINGLE_CLICK);
+    } else if (type == 0 && doubleClick) {
+        emit(DOUBLE_CLICK);
+    }
+    ```
+
+    Send `AckButtonEventsInd` when `(type == 0 && (singleClick || doubleClick)) || type == 2`.
+
+    <Info>
+      Single-click events have slightly higher latency in this use case because the button must wait to rule out a double-click before confirming the event.
+    </Info>
+  </Tab>
+
+  <Tab title="Single/Double/Hold">
+    Use this when your app needs all three interaction types. This is the most complete use case but requires careful flag management.
+
+    | Condition | Event to emit |
+    |---|---|
+    | `(!wasHold && singleClick) \|\| type == 2` | Single Click |
+    | `doubleClick` | Double Click |
+    | `type == 3 && !nextUpWillBeDoubleClick` | Hold |
+
+    ```c
+    if (type == 3 && !nextUpWillBeDoubleClick) {
+        emit(HOLD);
+    } else if (type == 2 || (!wasHold && singleClick)) {
+        emit(SINGLE_CLICK);
+    } else if (doubleClick) {
+        emit(DOUBLE_CLICK);
+    }
+    ```
+
+    Send `AckButtonEventsInd` when `(type == 0 && (singleClick || doubleClick)) || type == 2`.
+
+    <Info>
+      The `nextUpWillBeDoubleClick` flag is set when you receive `event_encoded == 7`. Clear it after processing the next Up event.
+    </Info>
+  </Tab>
+</Tabs>
+
+## Decoding `event_encoded`
+
+Each `ButtonEventNotification` carries an `event_encoded` byte. Decode it using the following logic:
+
+```c
+bool wasHold = false;
+bool singleClick = false;
+bool doubleClick = false;
+bool nextUpWillBeDoubleClick = false;
+int type;
+
+if (event_encoded == 7) {
+    // Special marker: next Up event will complete a double click
+    nextUpWillBeDoubleClick = true;
+    // No further processing for this packet
+} else if (event_encoded & 0x08) {
+    // Extended encoding: upper bits carry additional flags
+    type = 0; // always an Up event in this branch
+    wasHold        = (event_encoded >> 2) & 1;
+    singleClick    = ((event_encoded >> 1) & 1) && !((event_encoded >> 0) & 1);
+    doubleClick    = ((event_encoded >> 1) & 1) && ((event_encoded >> 0) & 1);
+} else {
+    // Standard encoding: bits 0-1 are the type
+    type = event_encoded & 0x03;
+    // type: 0=Up, 1=Down, 2=Single click timeout, 3=Hold
+}
+```
+
+**Bit layout for the standard encoding:**
+
+| Bits | Meaning |
+|---|---|
+| 0–1 | `type`: `0`=Up, `1`=Down, `2`=Single click timeout, `3`=Hold |
+| 3 | If set, use extended decoding (bits 0–2 carry flags, `type` is always Up) |
+
+**Extended encoding flags (when bit 3 is set):**
+
+| Bit | Meaning |
+|---|---|
+| 2 | `wasHold` — the preceding hold event has ended |
+| 1 and not 0 | `singleClick` — a single click is confirmed |
+| 1 and 0 | `doubleClick` — a double click is confirmed |
+
+## Sending acknowledgements
+
+After processing certain events, you must send an `AckButtonEventsInd` (opcode 16) to confirm receipt. The button uses this to advance its internal event counter and know which events it can safely discard from its queue.
+
+Send `AckButtonEventsInd` when:
+
+```c
+if ((type == 0 && (singleClick || doubleClick)) || type == 2) {
+    send(AckButtonEventsInd);
+}
+```
+
+In plain terms: acknowledge on every Up event that concludes a click or double-click sequence, and on every Single click timeout event. Do not acknowledge Down events, Hold events, or Up events that follow a hold.
+
+<Warning>
+  Failing to send `AckButtonEventsInd` when required will cause the button's event queue to fill up. When the queue is full, new events are dropped until an acknowledgement is received.
+</Warning>

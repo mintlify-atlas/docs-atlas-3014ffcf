@@ -1,0 +1,53 @@
+---
+title: "Flic Duo protocol extension overview"
+description: "How the Flic Duo extends Flic 2 with dual buttons, swipe gestures, accelerometer data, and Push-Twist rotation while staying backwards compatible."
+---
+
+The Flic Duo is a two-button smart button that extends the Flic 2 protocol. Any implementation using the base Flic 2 specification can already communicate with a Flic Duo — only events from the large button are delivered in that case. By setting `supports_duo = 1` during pairing or quick verify, you unlock the full Flic Duo feature set: independent events for both buttons, swipe gesture recognition, accelerometer data, and the Push-Twist continuous rotation sensor.
+
+## Feature comparison
+
+| Feature | Flic 2 base protocol | Flic Duo extension |
+|---------|---------------------|-------------------|
+| Big button events | ✓ | ✓ |
+| Small button events | — | ✓ |
+| Swipe gestures (Left/Right/Up/Down) | — | ✓ |
+| Accelerometer (x, y, z) | — | ✓ |
+| Push-Twist rotation | — | ✓ |
+| `is_duo` detection | — | ✓ |
+| Color field | — | ✓ |
+| Dual `event_count` tracking | — | ✓ |
+
+## Detecting a Flic Duo
+
+After pairing or reconnecting with `supports_duo = 1`, check the `is_duo` field in the response:
+
+- `FullVerifyResponse2.is_duo` — 1 if the device is a Flic Duo
+- `QuickVerifyResponse.is_duo` — 1 if the device is a Flic Duo
+
+If `is_duo` is 0, treat the device as a standard Flic 2 regardless of which packets you sent.
+
+## Button numbering
+
+Flic Duo has two buttons. Throughout the protocol, button 0 is the **big button** and button 1 is the **small button**. Arrays of two entries (such as `event_count[2]`) follow this ordering.
+
+## Color field
+
+When `supports_duo = 1`, `FullVerifyResponse2` includes a null-terminated `color` field (up to 16 bytes). Current values are `"black"` and `"white"`. A `GetColorRequest` (opcode 40) / `GetColorResponse` (opcode 34) pair is also available to query the color mid-session.
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Pairing with Flic Duo support" icon="key" href="/protocol/duo/pairing">
+    The supports_duo bit, cryptographic changes, and detecting is_duo.
+  </Card>
+  <Card title="Dual button events" icon="hand-pointer" href="/protocol/duo/button-events">
+    Initializing events, the new binary encoding, and gesture recognition.
+  </Card>
+  <Card title="Push-Twist" icon="rotate" href="/protocol/duo/push-twist">
+    Enabling and reading the continuous rotation angle sensor.
+  </Card>
+  <Card title="Flic Duo guide" icon="book" href="/guides/flic-duo">
+    Higher-level guide for integrating Flic Duo in your app.
+  </Card>
+</CardGroup>

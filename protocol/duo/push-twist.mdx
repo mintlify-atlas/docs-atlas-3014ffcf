@@ -1,0 +1,101 @@
+---
+title: "Push-Twist rotation sensor for Flic Duo"
+description: "Enable and decode Flic Duo Push-Twist rotation events: angle_diff units, the per-button enable bitmask, angle reset behavior, and the half-second hold gate."
+---
+
+The Flic Duo includes a built-in rotation sensor called Push-Twist. When one or both buttons are held down, the button emits continuous rotation angle updates roughly once per BLE connection interval. This feature is only available when `is_duo == 1`.
+
+## Enabling Push-Twist
+
+Send `EnablePushTwistInd` to turn the feature on or off per button:
+
+```c
+#define OPCODE_TO_FLIC_ENABLE_PUSH_TWIST_IND 37
+struct EnablePushTwistInd {
+    uint8_t opcode;
+    uint8_t buttons : 2;  // bitmask: bit 0 = big button, bit 1 = small button
+    uint8_t rfu     : 6;
+} PACKED;
+```
+
+Set `buttons` to control which buttons activate the Push-Twist sensor:
+
+| `buttons` value | Effect |
+|----------------|--------|
+| `0b00` (0) | Disabled for both buttons |
+| `0b01` (1) | Enabled for big button only |
+| `0b10` (2) | Enabled for small button only |
+| `0b11` (3) | Enabled for both buttons |
+
+<Note>
+  Push-Twist events are only sent while at least one of the enabled buttons is held down. No events are emitted when both buttons are released.
+</Note>
+
+## Receiving rotation updates
+
+```c
+#define OPCODE_FROM_FLIC_PUSH_TWIST_DATA_NOTIFICATION 33
+struct PushTwistDataNotification {
+    uint8_t opcode;
+    uint8_t buttons_pressed                        : 2; // one bit per button (0=big, 1=small)
+    uint8_t is_first_event                         : 2; // per button, since last press
+    uint8_t buttons_pressed_for_at_least_half_a_second : 2; // per button
+    uint8_t rfu                                    : 2;
+    int32_t angle_diff;   // signed; 65536 = 360 degrees
+} PACKED;
+```
+
+<ParamField path="buttons_pressed" type="uint2 bitmask">
+  Which buttons are currently held. Bit 0 = big button, bit 1 = small button.
+</ParamField>
+<ParamField path="is_first_event" type="uint2 bitmask">
+  Set for the first Push-Twist event since a button was pressed down. Useful for ignoring any large diffs that may result from the button's position when pressed.
+</ParamField>
+<ParamField path="buttons_pressed_for_at_least_half_a_second" type="uint2 bitmask">
+  Indicates whether each pressed button has been held for at least 0.5 seconds. Useful for implementing a "hold to twist" interaction pattern.
+</ParamField>
+<ParamField path="angle_diff" type="int32 (signed)">
+  Rotation delta since the last event. The unit maps 65536 to 360 degrees. Positive values indicate rightward (clockwise) rotation; negative values indicate leftward (counter-clockwise) rotation.
+</ParamField>
+
+## Angle units
+
+To convert `angle_diff` to degrees:
+
+```c
+float degrees = angle_diff * (360.0f / 65536.0f);
+```
+
+To convert `angle_diff` to radians:
+
+```c
+float radians = angle_diff * (2.0f * M_PI / 65536.0f);
+```
+
+## Angle reset behavior
+
+The internal rotation state resets each time **both buttons are released and at least one button is pressed again**. As a result:
+
+- The first event after a new press typically contains a small `angle_diff`, not a value accumulated while the button was not held.
+- Use `is_first_event` to detect this reset and avoid applying a spurious large rotation at the start of an interaction.
+
+<Tip>
+  For a "hold-to-rotate" interaction, gate your angle accumulation on `buttons_pressed_for_at_least_half_a_second` to avoid triggering rotation from brief taps.
+</Tip>
+
+## Typical usage pattern
+
+<Steps>
+  <Step title="Detect Flic Duo">
+    Confirm `is_duo == 1` in `FullVerifyResponse2` or `QuickVerifyResponse` before enabling Push-Twist.
+  </Step>
+  <Step title="Enable the sensor">
+    Send `EnablePushTwistInd` with the appropriate `buttons` bitmask for your use case.
+  </Step>
+  <Step title="Accumulate angle">
+    On each `PushTwistDataNotification`, add `angle_diff` to your running total. Reset the total when `is_first_event` is set, or when both buttons are released.
+  </Step>
+  <Step title="Apply threshold or gesture">
+    Trigger an action when the accumulated angle crosses a threshold (e.g., ±32768 = ±180°), or use the sign of `angle_diff` to drive a continuous UI control like a volume slider.
+  </Step>
+</Steps>

@@ -1,0 +1,92 @@
+{
+  "projectType": "general",
+  "projectName": "Flic 2 Developer Documentation",
+  "projectDescription": "Open protocol specification and developer reference for building integrations with Flic 2 and Flic Duo Bluetooth Low Energy smart buttons.",
+  "theme": "luma",
+  "primaryColor": "#FF6B35",
+  "lightColor": null,
+  "darkColor": null,
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "overview-and-terminology",
+              "platform-libraries"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/pairing-and-connecting",
+              "guides/button-events",
+              "guides/battery-and-firmware",
+              "guides/flic-duo"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Protocol Reference",
+        "groups": [
+          {
+            "group": "Flic 2 Protocol",
+            "pages": [
+              "protocol/advertising",
+              "protocol/gatt-services",
+              "protocol/packet-format",
+              "protocol/session-establishment",
+              "protocol/button-event-packets",
+              "protocol/utility-packets"
+            ]
+          },
+          {
+            "group": "Flic Duo Extension",
+            "pages": [
+              "protocol/duo/overview",
+              "protocol/duo/pairing",
+              "protocol/duo/button-events",
+              "protocol/duo/push-twist"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Open BLE protocol specification for Flic 2 and Flic Duo buttons",
+    "Multi-app concurrent connection support via logical connection IDs",
+    "Cryptographic pairing with Ed25519 genuineness verification and X25519 key exchange",
+    "Five button event types: down, up, click, double click, hold",
+    "Four configurable trigger mode use cases for flexible event handling",
+    "Chaskey-LTS packet signature authentication for secure sessions",
+    "Firmware over-the-air (OTA) update support",
+    "Flic Duo Push-Twist rotation sensor and dual-button support",
+    "Platform libraries for iOS, Android, Windows, Linux, and embedded C",
+    "Battery level monitoring and LED control"
+  ],
+  "publicApiSurface": [
+    "FullVerifyRequest1 / FullVerifyResponse1 (opcode 0) — full pairing setup initiation",
+    "FullVerifyRequest2 / FullVerifyResponse2 (opcode 2/1) — pairing key exchange completion",
+    "QuickVerifyRequest / QuickVerifyResponse (opcode 5/8) — reconnection session establishment",
+    "InitButtonEventsLightRequest (opcode 23) — initialize button event subscription",
+    "ButtonEventNotification (opcode 12 FROM) — button up/down/click/hold events",
+    "AckButtonEventsInd (opcode 16 TO) — button event acknowledgement",
+    "GetBatteryLevelRequest / GetBatteryLevelResponse (opcode 20) — battery voltage query",
+    "SetConnectionParametersInd (opcode 12 TO) — BLE connection parameter tuning",
+    "SetAdvParametersRequest / SetAdvParametersResponse (opcode 27) — advertising configuration",
+    "StartFirmwareUpdateRequest / StartFirmwareUpdateResponse (opcode 17/18) — OTA firmware update",
+    "GetNameRequest / SetNameRequest / GetNameResponse (opcodes 11/10/16) — button name management",
+    "DisconnectVerifiedLinkInd (opcode 9 TO) — session termination",
+    "ForceBtDisconnectInd (opcode 6 TO) — force BLE disconnect with optional restart",
+    "InitButtonEventsDuoLightRequest (opcode 35) — Flic Duo dual-button event init",
+    "ButtonEventDuoNotification (opcode 32 FROM) — Flic Duo button events with gestures",
+    "EnablePushTwistInd (opcode 37 TO) — enable Flic Duo rotation sensor",
+    "PushTwistDataNotification (opcode 33 FROM) — Flic Duo rotation angle updates",
+    "StartFirmwareUpdateDuoRequest (opcode 38 TO) — Flic Duo OTA firmware update"
+  ]
+}

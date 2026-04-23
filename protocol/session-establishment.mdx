@@ -1,0 +1,225 @@
+---
+title: "Session establishment: full verify and quick verify flows"
+description: "Packet reference for Full Verify pairing, Quick Verify reconnection, the test-if-unpaired procedure, and session state transitions in Flic 2."
+---
+
+Before any button events or commands can be exchanged, a Flic 2 session must be cryptographically established. New pairings go through a **Full Verify** flow that performs Ed25519 signature validation and an X25519 key exchange. Subsequent reconnections use the faster **Quick Verify** flow, which derives a fresh session key from the stored pairing credentials using Chaskey-LTS. This page provides the complete packet reference, state machine, and cryptographic derivation details for both flows.
+
+## Session state machine
+
+| State | Description |
+|---|---|
+| `STATE_WAIT_FULL_VERIFY1` | Sent `FullVerifyRequest1`, waiting for `FullVerifyResponse1`. |
+| `STATE_WAIT_FULL_VERIFY2` | Sent `FullVerifyRequest2`, waiting for `FullVerifyResponse2`. |
+| `STATE_WAIT_QUICK_VERIFY` | Sent `QuickVerifyRequest`, waiting for `QuickVerifyResponse`. |
+| `STATE_SESSION_ESTABLISHED` | Session active; packets must be signed with the session key. |
+| `STATE_WAIT_FULL_VERIFY1_TEST_UNPAIRED` | Sent `FullVerifyRequest1` as part of the test-if-unpaired check. |
+| `STATE_WAIT_TEST_IF_REALLY_UNPAIRED_RESPONSE` | Sent `TestIfReallyUnpairedRequest`, waiting for `TestIfReallyUnpairedResponse`. |
+| `STATE_FAILED` | Unrecoverable error. Close the BLE connection and retry after 5 seconds. |
+
+## Full verify
+
+Full verify runs the first time an app connects to a button. It authenticates the button's identity and derives session and pairing keys.
+
+### Packet structs
+
+```c
+#define OPCODE_TO_FLIC_FULL_VERIFY_REQUEST_1 0
+struct FullVerifyRequest1 {
+    uint8_t  opcode;
+    uint32_t tmp_id;
+};
+
+#define OPCODE_FROM_FLIC_NO_LOGICAL_CONNECTION_SLOTS_IND 2
+struct NoLogicalConnectionSlotsInd {
+    uint8_t  opcode;
+    uint32_t tmp_ids[];
+};
+
+#define OPCODE_FROM_FLIC_FULL_VERIFY_RESPONSE_1 0
+struct FullVerifyResponse1 {
+    uint8_t  opcode;
+    uint32_t tmp_id;
+    uint8_t  signature[64];
+    uint8_t  address[6];
+    uint8_t  address_type;
+    uint8_t  ecdh_public_key[32];
+    uint8_t  random_bytes[8];
+    uint8_t  link_is_encrypted:1;
+    uint8_t  is_in_public_mode:1;
+    uint8_t  has_bond_info:1;
+    uint8_t  rfu:5;
+};
+
+#define OPCODE_TO_FLIC_FULL_VERIFY_REQUEST_2 2
+struct FullVerifyRequest2 {
+    uint8_t  opcode;
+    uint8_t  ecdh_public_key[32];
+    uint8_t  random_bytes[8];
+    uint8_t  rfu;
+    uint8_t  verifier[16];
+};
+
+#define OPCODE_TO_FLIC_FULL_VERIFY_ABORT_IND 3
+struct FullVerifyAbortInd {
+    uint8_t opcode;
+};
+
+#define OPCODE_FROM_FLIC_FULL_VERIFY_FAIL_RESPONSE 3
+struct FullVerifyFailResponse {
+    uint8_t opcode;
+    uint8_t reason;   // 0 = INVALID_VERIFIER, 1 = NOT_IN_PUBLIC_MODE
+};
+
+#define OPCODE_FROM_FLIC_FULL_VERIFY_RESPONSE_2 1
+struct FullVerifyResponse2 {
+    uint8_t  opcode;
+    uint8_t  app_credentials_match:1;
+    uint8_t  cares_about_app_credentials:1;
+    uint8_t  rfu:6;
+    uint8_t  button_uuid[16];
+    uint8_t  name_len;
+    char     name[23];
+    uint32_t firmware_version;
+    uint16_t battery_level;
+    char     serial_number[11];
+};
+```
+
+### Cryptographic derivation
+
+<Steps>
+  <Step title="Generate client X25519 key pair">
+    Generate a temporary Curve25519 secret key. Compute `clientPublicKey` using X25519 with the standard base point. Compute `curve25519SharedSecret` using X25519 with the button's `ecdh_public_key` from `FullVerifyResponse1`.
+  </Step>
+  <Step title="Generate client random bytes">
+    Generate 8 random `clientRandomBytes` for use in `FullVerifyRequest2`.
+  </Step>
+  <Step title="Derive the full verify secret">
+    ```text
+    fullVerifySecret = SHA-256(
+        curve25519SharedSecret ||
+        sigBits ||
+        random_bytes ||        // button's random bytes from FullVerifyResponse1
+        clientRandomBytes ||
+        0x00
+    )
+    ```
+    `sigBits` are bits 0–1 of `signature[32]` from `FullVerifyResponse1`. Try all 4 combinations (0–3) until Ed25519 signature verification passes.
+  </Step>
+  <Step title="Derive HMAC key">
+    ```text
+    fullVerifyHmac = HMAC-SHA-256 keyed with fullVerifySecret
+    ```
+  </Step>
+  <Step title="Derive verifier and session key">
+    | Value | HMAC message | Length |
+    |---|---|---|
+    | `verifier` | `'AT'` | First 16 bytes |
+    | `sessionKey` | `'SK'` | First 16 bytes |
+  </Step>
+  <Step title="Derive pairing credentials">
+    ```text
+    pairingId  = first 4 bytes of fullVerifyHmac('PK')
+    pairingKey = next 16 bytes of fullVerifyHmac('PK')
+    ```
+    Store both values persistently for future quick verify sessions.
+  </Step>
+</Steps>
+
+### Ed25519 genuineness verification
+
+Before proceeding past `STATE_WAIT_FULL_VERIFY1`, verify the button is genuine using the following Ed25519 public key:
+
+```text
+d33f2440dd54b31b2e1dcf40132efa41d8f8a7474168df4008f5a95fb3b0d022
+```
+
+The signed message is the concatenation of `address || address_type || ecdh_public_key` (39 bytes total). Because `signature[32]` bits 0–1 (called `sigBits`) are overwritten with the key derivation index, you must try all 4 combinations of those bits until verification succeeds.
+
+### Battery voltage
+
+The `battery_level` field in `FullVerifyResponse2` is a raw ADC reading. Convert to volts:
+
+```text
+voltage = battery_level * 3.6 / 1024.0
+```
+
+## Quick verify
+
+Quick verify runs on every reconnection after the initial pairing. It is substantially faster than full verify because it skips the Ed25519 check and X25519 exchange, instead deriving a fresh session key from the stored pairing key using Chaskey-LTS.
+
+### Packet structs
+
+```c
+#define OPCODE_TO_FLIC_QUICK_VERIFY_REQUEST 5
+struct QuickVerifyRequest {
+    uint8_t  opcode;
+    uint8_t  random_client_bytes[7];
+    uint8_t  rfu;
+    uint32_t tmp_id;
+    uint32_t pairing_identifier;
+};
+
+#define OPCODE_FROM_FLIC_QUICK_VERIFY_NEGATIVE_RESPONSE 6
+struct QuickVerifyNegativeResponse {
+    uint8_t  opcode;
+    uint32_t tmp_id;
+};
+
+#define OPCODE_FROM_FLIC_QUICK_VERIFY_RESPONSE 8
+struct QuickVerifyResponse {
+    uint8_t  opcode;
+    uint8_t  random_button_bytes[8];
+    uint32_t tmp_id;
+    uint8_t  link_is_encrypted:1;
+    uint8_t  has_bond_info:1;
+    uint8_t  padding:6;
+};
+```
+
+### Session key derivation
+
+Construct a 16-byte message:
+
+```text
+message = random_client_bytes[0..6] || 0x00 || random_button_bytes[0..7]
+sessionKey = Chaskey-LTS(pairing_key, message)
+```
+
+The resulting `sessionKey` is active for the duration of this BLE connection.
+
+## Test if really unpaired
+
+When quick verify returns a `QuickVerifyNegativeResponse`, the button may have been factory-reset or may simply have dropped the pairing record. Before discarding your stored credentials, send a `TestIfReallyUnpairedRequest` to confirm the button no longer recognizes the pairing.
+
+### Packet structs
+
+```c
+#define OPCODE_TO_FLIC_TEST_IF_REALLY_UNPAIRED_REQUEST 4
+struct TestIfReallyUnpairedRequest {
+    uint8_t  opcode;
+    uint8_t  ecdh_public_key[32];
+    uint8_t  random_bytes[8];
+    uint32_t pairing_identifier;
+    uint8_t  pairing_token[16];
+};
+
+#define OPCODE_FROM_FLIC_TEST_IF_REALLY_UNPAIRED_RESPONSE 4
+struct TestIfReallyUnpairedResponse {
+    uint8_t opcode;
+    uint8_t result[16];
+};
+```
+
+Compute `pairing_token` as the first 16 bytes of `fullVerifyHmac('PT' || pairing_id || pairing_key)`.
+
+Verify the response by comparing `result` with the first 16 bytes of `fullVerifyHmac('NE' || pairing_token)`. A match confirms the button is truly unpaired and you may safely discard the stored pairing credentials.
+
+## Post-session rules
+
+Once the session reaches `STATE_SESSION_ESTABLISHED`:
+
+- Every packet in both directions must carry a valid Chaskey-LTS signature.
+- A packet with an invalid signature immediately transitions the session to `STATE_FAILED`.
+- After a `STATE_FAILED` transition, close the BLE connection and wait at least 5 seconds before retrying.

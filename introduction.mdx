@@ -1,0 +1,40 @@
+---
+title: "Flic 2: open BLE protocol for smart button integration"
+description: "Flic 2 is an open Bluetooth Low Energy smart button protocol. Learn what you can build and how the developer ecosystem is structured."
+---
+
+Flic 2 and Flic Duo are physical Bluetooth Low Energy smart buttons built on an open protocol. Any developer can integrate them into custom applications across any platform — from mobile apps and desktop software to embedded systems and Linux daemons. Whether you're building home automation tools, accessibility aids, presentation controllers, or IoT workflows, Flic buttons give you a reliable, low-power physical trigger you can program to do anything.
+
+## What you can build
+
+Because the Flic 2 protocol is open and documented, you can implement the full BLE communication stack yourself, or use one of the official platform libraries to skip the low-level work. The libraries handle device discovery, pairing, verification, and event delivery, so you can focus on responding to button presses rather than managing BLE state machines.
+
+## Developer assets
+
+The Flic 2 developer ecosystem is organized around two main assets:
+
+- **The open protocol specification** — a complete description of the BLE advertising format, GATT services, packet structure, and session establishment. Use this if you're implementing Flic support on a platform without an existing library, or if you need fine-grained control over the BLE layer.
+- **Platform libraries** — official SDKs for iOS, Android, Windows, Linux, and embedded C. These wrap the protocol in higher-level APIs and include sample projects to help you get started quickly.
+
+In addition to these core assets, two supplementary resources are available: the **Flic Hub SDK** for building modules that run directly on the Flic Hub hardware, and the **Flic Cloud Buttons** system for cloud-connected button deployments.
+
+<Note>
+  The Flic 2 protocol is also used by Flic Duo. Flic Duo is backwards compatible with Flic 2, so the same libraries and protocol implementation support both button types. The iOS and Android libraries explicitly support both.
+</Note>
+
+## Explore the documentation
+
+<CardGroup cols={2}>
+  <Card title="Technical overview" icon="book-open" href="/overview-and-terminology">
+    Connection states, trigger modes, verification, privacy modes, and hardware behavior — everything you need to understand before writing code.
+  </Card>
+  <Card title="Platform libraries" icon="code" href="/platform-libraries">
+    Official SDKs for iOS, Android, Windows, Linux, and embedded C, with links to source repositories and sample projects.
+  </Card>
+  <Card title="Pairing and connecting" icon="bluetooth" href="/guides/pairing-and-connecting">
+    Step-by-step guide to scanning for buttons, completing the pairing flow, and managing connections in your app.
+  </Card>
+  <Card title="Protocol: advertising" icon="radio" href="/protocol/advertising">
+    BLE advertising packet format and how to discover Flic 2 buttons at the protocol level.
+  </Card>
+</CardGroup>

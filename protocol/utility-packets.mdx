@@ -1,0 +1,248 @@
+---
+title: "Utility and maintenance packets for Flic 2 sessions"
+description: "Reference for ping, session termination, connection parameters, battery, name management, firmware updates, timer, and advertising packets in Flic 2."
+---
+
+Once a Flic 2 session is established, a range of utility packets let you manage the connection, update firmware, query battery level, rename the button, and tune BLE parameters. All packets in this section require a signed, established session unless noted otherwise.
+
+## Ping
+
+The button may send a `PingRequest` at any time to verify the session is alive. Your app must always respond:
+
+```c
+#define OPCODE_FROM_FLIC_PING_REQUEST 15
+struct PingRequest  { uint8_t opcode; uint32_t ping_id; } PACKED;
+
+#define OPCODE_TO_FLIC_PING_RESPONSE 14
+struct PingResponse { uint8_t opcode; uint32_t ping_id; } PACKED;
+```
+
+Echo the same `ping_id` from the request back in the response.
+
+## Session termination
+
+<AccordionGroup>
+  <Accordion title="DisconnectVerifiedLinkInd — terminate the verified session">
+
+    The button sends this when the session must end (unusual; indicates a protocol violation):
+
+    ```c
+    #define OPCODE_FROM_FLIC_DISCONNECTED_VERIFIED_LINK_IND 9
+    ```
+
+    Your app can also send it to cleanly end a session without dropping the BLE link:
+
+    ```c
+    #define OPCODE_TO_FLIC_DISCONNECT_VERIFIED_LINK_IND 9
+    struct DisconnectVerifiedLinkInd { uint8_t opcode; } PACKED;
+    ```
+  </Accordion>
+  <Accordion title="ForceBtDisconnectInd — force BLE disconnection">
+
+    Forces the BLE link to drop. Set `restart` to `true` to have the button begin advertising again immediately after disconnecting (useful after a firmware update):
+
+    ```c
+    #define OPCODE_TO_FLIC_FORCE_BT_DISCONNECT_IND 6
+    struct ForceBtDisconnectInd { uint8_t opcode; bool restart; } PACKED;
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Connection parameters
+
+For optimal battery life, send a `SetConnectionParametersInd` after all queued events have been delivered:
+
+```c
+#define OPCODE_TO_FLIC_SET_CONNECTION_PARAMETERS_IND 12
+struct SetConnectionParametersInd {
+    uint8_t opcode;
+    uint16_t intv_min;   // units of 1.25 ms
+    uint16_t intv_max;   // units of 1.25 ms
+    uint16_t latency;    // slave latency (connection events that can be skipped)
+    uint16_t timeout;    // supervision timeout, units of 10 ms
+} PACKED;
+```
+
+Recommended values for most use cases:
+
+| Field | Value | Equivalent |
+|-------|-------|------------|
+| `intv_min` | 80 | 100 ms |
+| `intv_max` | 90 | 112.5 ms |
+| `latency` | 17 | skip 17 events |
+| `timeout` | 800 | 8 seconds |
+
+<Note>
+  iOS restricts the range of allowed connection parameters. Verify your chosen values are permitted on your target platform before deploying.
+</Note>
+
+If multiple sessions send conflicting parameters, the button uses the combination yielding the lowest click latency.
+
+## Auto-disconnect time
+
+Update the auto-disconnect timer mid-session without re-sending the full init packet:
+
+```c
+#define OPCODE_TO_FLIC_SET_AUTO_DISCONNECT_TIME_IND 19
+struct SetAutoDisconnectTimeInd {
+    uint8_t opcode;
+    uint16_t auto_disconnect_time; // seconds; 511 = disabled
+} PACKED;
+```
+
+## Battery level
+
+```c
+#define OPCODE_TO_FLIC_GET_BATTERY_LEVEL_REQUEST 20
+struct GetBatteryLevelRequest  { uint8_t opcode; } PACKED;
+
+#define OPCODE_FROM_FLIC_GET_BATTERY_LEVEL_RESPONSE 20
+struct GetBatteryLevelResponse { uint8_t opcode; uint16_t battery_level; } PACKED;
+```
+
+Convert the raw reading to voltage:
+
+```
+voltage = battery_level * 3.6 / 1024.0
+```
+
+Flic 2 uses a CR2032 coin cell. When voltage drops below 2.6 V, prompt the user to replace the battery soon.
+
+## Button name management
+
+| Opcode (direction) | Struct | Purpose |
+|--------------------|--------|---------|
+| 11 (TO) | `GetNameRequest` | Request the current name |
+| 16 (FROM) | `GetNameResponse` | Returns `name_len` + up to 23 bytes of UTF-8 name |
+| 10 (TO) | `SetNameRequest` | Set a new name (`name_len` + up to 23 bytes) |
+| 17 (FROM) | `SetNameResponse` | `bool success` |
+| 14 (FROM) | `NameUpdatedNotification` | Sent when another session changes the name |
+
+```c
+#define OPCODE_TO_FLIC_GET_NAME_REQUEST   11
+#define OPCODE_FROM_FLIC_GET_NAME_RESPONSE 16
+struct GetNameResponse { uint8_t opcode; uint8_t name_len; char name[23]; } PACKED;
+
+#define OPCODE_TO_FLIC_SET_NAME_REQUEST   10
+struct SetNameRequest  { uint8_t opcode; uint8_t name_len; char name[23]; } PACKED;
+
+#define OPCODE_FROM_FLIC_SET_NAME_RESPONSE 17
+struct SetNameResponse { uint8_t opcode; bool success; } PACKED;
+
+#define OPCODE_FROM_FLIC_NAME_UPDATED_NOTIFICATION 14
+struct NameUpdatedNotification { uint8_t opcode; uint8_t name_len; char name[23]; } PACKED;
+```
+
+## Firmware update
+
+<Steps>
+  <Step title="Get current firmware version">
+    ```c
+    #define OPCODE_TO_FLIC_GET_FIRMWARE_VERSION_REQUEST 8
+    #define OPCODE_FROM_FLIC_GET_FIRMWARE_VERSION_RESPONSE 5
+    struct GetFirmwareVersionResponse { uint8_t opcode; uint32_t firmware_version; } PACKED;
+    ```
+  </Step>
+  <Step title="Check for updates">
+    Poll `https://api.flic.io/api/v1/buttons/versions/firmware` with the button's serial number and current firmware version. The endpoint returns the new firmware binary or `null` if already up to date.
+  </Step>
+  <Step title="Start the update">
+    ```c
+    #define OPCODE_TO_FLIC_START_FIRMWARE_UPDATE_REQUEST 17
+    struct StartFirmwareUpdateRequest {
+        uint8_t opcode; uint32_t len; uint16_t status_interval;
+    } PACKED;
+    #define OPCODE_FROM_FLIC_START_FIRMWARE_UPDATE_RESPONSE 18
+    struct StartFirmwareUpdateResponse { uint8_t opcode; int start_pos; } PACKED;
+    ```
+
+    `start_pos` values:
+
+    | Value | Meaning |
+    |-------|---------|
+    | ≥ 0 | Resume from this byte offset |
+    | -1 | Invalid request |
+    | -2 | Update already in progress on another session |
+    | -3 | Update already complete — disconnect to reboot |
+  </Step>
+  <Step title="Send firmware data">
+    Send the firmware binary in chunks (max 64 bytes each):
+
+    ```c
+    #define OPCODE_TO_FLIC_FIRMWARE_UPDATE_DATA_IND 18
+    struct FirmwareUpdateDataInd { uint8_t opcode; uint8_t data[]; } PACKED;
+    ```
+  </Step>
+  <Step title="Monitor progress">
+    When `status_interval` is non-zero, the button sends a notification every `status_interval` chunks:
+
+    ```c
+    #define OPCODE_FROM_FLIC_FIRMWARE_UPDATE_NOTIFICATION 19
+    struct FirmwareUpdateNotification { uint8_t opcode; int pos; } PACKED;
+    ```
+
+    `pos` equals the total firmware length when complete. `pos == 0` means the firmware failed signature verification and was rejected.
+  </Step>
+  <Step title="Disconnect to reboot">
+    After a successful update, disconnect the BLE link. The button reboots automatically. To have it start advertising immediately, send `ForceBtDisconnectInd` with `restart = true` before disconnecting.
+  </Step>
+</Steps>
+
+## Timer
+
+Schedule a one-shot callback from the button after a specified delay:
+
+```c
+#define OPCODE_TO_FLIC_START_API_TIMER_IND 13
+struct StartApiTimerInd { uint8_t opcode; uint32_t timeout_ms; } PACKED;
+
+#define OPCODE_FROM_FLIC_API_TIMER_NOTIFICATION 13
+struct ApiTimerNotification { uint8_t opcode; } PACKED;
+```
+
+## Get current time
+
+Query the button's internal clock (time since last boot):
+
+```c
+#define OPCODE_TO_FLIC_GET_CURRENT_TIME_REQUEST 25
+struct GetCurrentTimeRequest { uint8_t opcode; } PACKED;
+
+#define OPCODE_FROM_FLIC_GET_CURRENT_TIME_RESPONSE 23
+struct GetCurrentTimeResponse { uint8_t opcode; uint64_t timestamp : 48; } PACKED;
+```
+
+The timestamp is in units of 1/32768 seconds since the button last booted.
+
+## Advertising parameters
+
+Requires firmware version 7 or later. Adjust how the button advertises:
+
+```c
+#define OPCODE_TO_FLIC_SET_ADV_PARAMETERS_REQUEST 27
+struct SetAdvParametersRequest {
+    uint8_t opcode;
+    uint8_t adv_type     : 2;
+    uint8_t use_coded_phy : 1;  // 0 = disable Coded PHY
+    uint8_t rfu          : 5;
+} PACKED;
+
+#define OPCODE_FROM_FLIC_SET_ADV_PARAMETERS_RESPONSE 27
+struct SetAdvParametersResponse { uint8_t opcode; bool success; } PACKED;
+```
+
+Set `use_coded_phy` to 0 to disable Coded PHY advertising if your platform does not support it.
+
+## Connection-less packets
+
+These packets use `connId = 0` and carry no signature. They may arrive before a session is established:
+
+```c
+// Sent by button when BLE pairing completes
+#define OPCODE_FROM_FLIC_PAIRING_FINISHED_IND 7
+struct PairingFinishedInd { uint8_t opcode; bool success; } PACKED;
+
+// Send to trigger BLE pairing/bonding on the current link
+#define OPCODE_TO_FLIC_BLE_SECURITY_REQUEST_IND 7
+struct BleSecurityRequestInd { uint8_t opcode; } PACKED;
+```

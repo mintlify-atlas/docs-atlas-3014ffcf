@@ -1,0 +1,183 @@
+---
+title: "Integrating Flic Duo: dual buttons, gestures, and Push-Twist"
+description: "Add Flic Duo support to your integration: second button events, swipe gesture recognition, accelerometer data, and Push-Twist rotation."
+---
+
+Flic Duo is a two-button device that is fully backwards compatible with the Flic 2 protocol. If you connect to a Flic Duo without declaring support for its extended features, the device behaves like a single Flic 2 button — only the large button's events are delivered. To unlock the small button, gesture recognition, accelerometer data, and Push-Twist rotation, set `supports_duo=1` during the verify handshake. This page describes every change required to go from a standard Flic 2 integration to a complete Flic Duo integration.
+
+## Detecting Flic Duo
+
+The `is_duo` field in the verify response tells you whether the connected device is a Flic Duo.
+
+- **Full verify**: `FullVerifyResponse2` includes `is_duo` and a `color` field (`"black"` or `"white"`, null-terminated).
+- **Quick verify**: `QuickVerifyResponse` also includes `is_duo` when `supports_duo=1` was set in the request.
+
+Store `is_duo` alongside your pairing credentials so you can skip Duo-specific initialization when connecting to a standard Flic 2.
+
+<Info>
+  Flic Duo comes in two colors. The `color` field in `FullVerifyResponse2` contains either `"black"` or `"white"` as a null-terminated ASCII string. You can use this to display device-accurate imagery in your UI.
+</Info>
+
+## Pairing with Flic Duo support
+
+Two changes are required during the verify handshake when you want to enable Flic Duo features.
+
+### Full verify
+
+In `FullVerifyRequest2`, set the `supports_duo` bit to `1`.
+
+When deriving `fullVerifySecret`, replace the `0x00` byte at the end of the SHA-256 input with `0x80`:
+
+```text
+Standard Flic 2:   SHA-256(shared_secret || 0x00)
+Flic Duo enabled:  SHA-256(shared_secret || 0x80)
+```
+
+All subsequent key derivations (`verifier`, `sessionKey`, pairing id, pairing key) use this modified `fullVerifySecret`.
+
+### Quick verify
+
+In `QuickVerifyRequest`, set `supports_duo=1`.
+
+When deriving the session key, replace the `0x00` byte in the Chaskey-LTS input with `0x40`:
+
+```text
+Standard Flic 2:   Chaskey-LTS(pairing_key, random_client_bytes[7] || 0x00 || random_button_bytes[8])
+Flic Duo enabled:  Chaskey-LTS(pairing_key, random_client_bytes[7] || 0x40 || random_button_bytes[8])
+```
+
+<Warning>
+  The `supports_duo` flag changes the key derivation on both sides of the handshake. If you set `supports_duo=1` in the request but use the standard derivation byte, the session key will not match and the connection will fail.
+</Warning>
+
+## Dual button events
+
+Flic Duo uses dedicated packet types for button events. These replace the standard `InitButtonEventsLightRequest` and `AckButtonEventsInd` when `is_duo` is true.
+
+| Standard packet | Flic Duo packet | Opcode |
+|---|---|---|
+| `InitButtonEventsLightRequest` | `InitButtonEventsDuoLightRequest` | 35 |
+| `ButtonEventNotification` | `ButtonEventDuoNotification` | 32 |
+| `AckButtonEventsInd` | `AckButtonEventsDuoInd` | 36 |
+
+### InitButtonEventsDuoLightRequest (opcode 35)
+
+This packet extends the standard init request with a two-element array:
+
+<ParamField path="body.event_count" type="number[]" required>
+  Array of two event counts: `event_count[0]` for the large button (index 0), `event_count[1]` for the small button (index 1). Persist both values separately.
+</ParamField>
+
+### Button numbering
+
+| Index | Button |
+|---|---|
+| `0` | Large button (same physical button as a standard Flic 2) |
+| `1` | Small button (Flic Duo only) |
+
+`AckButtonEventsDuoInd` (opcode 36) also carries a two-element `event_count` array. Increment and acknowledge each button's counter independently.
+
+The `event_encoded` decoding and use-case logic from [handling button events](/guides/button-events) applies identically to both buttons.
+
+## Gesture recognition
+
+Flic Duo detects swipe gestures using its accelerometer. Gestures are recognized on Up events — that is, when the button is released after a swipe motion.
+
+| Gesture | Direction |
+|---|---|
+| Left | Swipe left |
+| Right | Swipe right |
+| Up | Swipe up |
+| Down | Swipe down |
+
+Gesture events are delivered alongside button events in `ButtonEventDuoNotification`. Check the gesture field on every Up event if you want to handle swipes in your integration.
+
+## Accelerometer data
+
+`ButtonEventDuoNotification` includes raw accelerometer readings for each axis:
+
+<ParamField path="body.x" type="number">
+  X-axis reading. 8-bit signed integer.
+</ParamField>
+
+<ParamField path="body.y" type="number">
+  Y-axis reading. 8-bit signed integer.
+</ParamField>
+
+<ParamField path="body.z" type="number">
+  Z-axis reading. 8-bit signed integer.
+</ParamField>
+
+Convert raw values to g-force:
+
+```text
+g = raw_value / 64.036875
+```
+
+For example, a raw reading of `64` corresponds to approximately `1.00 g`.
+
+## Push-Twist
+
+Push-Twist is a continuous rotation input that lets users turn the Flic Duo like a dial while pressing one or both buttons. It is useful for volume controls, brightness adjustments, and other incremental value inputs.
+
+### Enabling Push-Twist
+
+Send an `EnablePushTwistInd` (opcode 37) to start receiving rotation events. Use the `buttons` bitmask to specify which buttons must be pressed to activate the Push-Twist mode:
+
+| Bit | Button |
+|---|---|
+| `bit 0` | Large button |
+| `bit 1` | Small button |
+
+For example, to require the large button to be held:
+
+```text
+buttons = 0b00000001  (bit 0 set)
+```
+
+To require both buttons to be held simultaneously:
+
+```text
+buttons = 0b00000011  (bits 0 and 1 set)
+```
+
+### PushTwistDataNotification (opcode 33)
+
+The button sends a `PushTwistDataNotification` continuously while the required buttons are held and the device is rotating.
+
+<ParamField path="body.angle_diff" type="number">
+  Signed integer representing the rotation since the last notification. The unit is 1/65536 of a full rotation: a value of `65536` equals 360°. Positive values indicate clockwise (right) rotation; negative values indicate counter-clockwise (left) rotation.
+</ParamField>
+
+<ParamField path="body.buttons_pressed" type="number">
+  Bitmask of currently pressed buttons at the time of this event. Same bit layout as the `EnablePushTwistInd` bitmask.
+</ParamField>
+
+<ParamField path="body.is_first_event" type="boolean">
+  `true` for the first notification in a new Push-Twist sequence (i.e., just after the required buttons were pressed). Use this to reset any accumulated angle in your application.
+</ParamField>
+
+<ParamField path="body.buttons_pressed_for_at_least_half_a_second" type="boolean">
+  `true` once the required buttons have been held for at least 500 ms. You can use this to distinguish an intentional twist from an accidental nudge during a normal button press.
+</ParamField>
+
+### Angle accumulation
+
+Each `PushTwistDataNotification` reports only the **delta** since the last notification, not an absolute angle. Accumulate deltas in your application to track total rotation:
+
+```c
+float total_angle_degrees = 0.0f;
+
+void on_push_twist(PushTwistDataNotification *n) {
+    if (n->is_first_event) {
+        total_angle_degrees = 0.0f;
+    }
+    total_angle_degrees += (float)n->angle_diff / 65536.0f * 360.0f;
+}
+```
+
+The accumulated angle resets when the required buttons are released and a new Push-Twist sequence begins (signaled by `is_first_event == true`).
+
+<Tip>
+  Use `buttons_pressed_for_at_least_half_a_second` as a gate before acting on accumulated angle. This prevents unintentional value changes when the user is simply clicking without intending to twist.
+</Tip>

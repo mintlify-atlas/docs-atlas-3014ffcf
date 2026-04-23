@@ -1,0 +1,164 @@
+---
+title: "Button event packets for Flic Duo"
+description: "Initializing dual-button events, decoding the Flic Duo binary event encoding, handling swipe gestures and accelerometer data, and sending acknowledgements."
+---
+
+When `is_duo` is 1, the standard Flic 2 button event packets must not be used. Instead, the Flic Duo uses a separate set of init, notification, and acknowledgement packets that support two independent buttons, millisecond timestamps, swipe gesture recognition, and accelerometer data.
+
+## Initializing button events
+
+```c
+#define OPCODE_TO_FLIC_INIT_BUTTON_EVENTS_DUO_LIGHT_REQUEST 35
+struct InitButtonEventsDuoLightRequest {
+    uint8_t opcode;
+    uint32_t event_count[2];         // [0]=big button, [1]=small button
+    uint32_t boot_id;
+    uint64_t auto_disconnect_time : 9;    // 511 = disabled
+    uint64_t max_queued_packets : 5;      // 0–30; 31 = no limit
+    uint64_t max_queued_packets_age : 20; // seconds; 0xfffff = no limit
+    uint64_t rfu : 6;
+} PACKED;
+```
+
+`event_count[2]` tracks each button independently. Initialize both to 0 on first connection and restore from persistent storage on reconnection.
+
+### Init response variants
+
+```c
+#define OPCODE_FROM_FLIC_INIT_BUTTON_EVENTS_DUO_RESPONSE_WITHOUT_BOOT_ID 30
+struct InitButtonEventsDuoResponseWithoutBootId {
+    uint8_t opcode;
+    uint64_t has_queued_events : 1;
+    uint64_t timestamp : 47;          // milliseconds since boot
+    uint32_t event_count[2];
+} PACKED;
+
+#define OPCODE_FROM_FLIC_INIT_BUTTON_EVENTS_DUO_RESPONSE_WITH_BOOT_ID 31
+struct InitButtonEventsDuoResponseWithBootId {
+    uint8_t opcode;
+    uint64_t has_queued_events : 1;
+    uint64_t timestamp : 47;          // milliseconds since boot
+    uint32_t event_count[2];
+    uint32_t boot_id;
+} PACKED;
+```
+
+<Note>
+  Flic Duo timestamps use **milliseconds** since boot, unlike the base Flic 2 protocol which uses units of 1/32768 seconds.
+</Note>
+
+## Button event notification
+
+```c
+#define OPCODE_FROM_FLIC_BUTTON_EVENT_DUO_NOTIFICATION 32
+struct ButtonEventDuoNotification {
+    uint8_t opcode;
+    uint8_t events_data[];
+} PACKED;
+```
+
+The `events_data` byte array is a packed bit stream. Use little-endian bit order (first bit = `events_data[0] & 1`). Stop decoding when fewer than 8 bits remain.
+
+### Decoder state
+
+Maintain these per-session variables:
+
+```c
+uint64_t last_timestamp = 0;
+uint32_t event_count[2] = {0, 0};  // from init response
+bool end_of_queue_marker_received = false;
+```
+
+Set `end_of_queue_marker_received = true` immediately if `has_queued_events` was 0 in the init response.
+
+### Decoding each update
+
+For each update in `events_data`, use an `extract_bits(n)` function that reads `n` bits as a little-endian integer and advances the bit cursor:
+
+```
+1. button_number = extract_bits(1)       // 0=big, 1=small
+
+2. Event counter update:
+   If first update for this button in this packet:
+     if extract_bits(1) == 0: diff = 0
+     else if extract_bits(1) == 0: diff = 1
+     else: diff = extract_bits({2,4,8,32}[extract_bits(2)]) + 1
+     event_count[button_number] = diff  // write, don't add
+   Else:
+     event_count[button_number]++
+
+3. Timestamp delta:
+   delta = extract_bits({8,10,13,16,24,32,40,48}[extract_bits(3)])
+   last_timestamp += delta  // absolute timestamp in ms
+
+4. Queue marker (if not yet received):
+   if extract_bits(1) == 1:
+     end_of_queue_marker_received = true
+     if extract_bits(1) == 1: // last queued event was discarded
+       // this is first non-queued event
+
+5. Event type: type = extract_bits(3)
+```
+
+### Event type table
+
+| `type` value | Description |
+|-------------|-------------|
+| 0 | up < 0.5 s (can't yet tell if single or double click) |
+| 1 | up between 0.5 s and 1 s (no double click) |
+| 2 | up ≥ 1 s (no double click) |
+| 3 | up < 0.5 s (second click of a double click) |
+| 4 | up ≥ 0.5 s (second click of a double click) |
+| 5 | down |
+| 6 | single click timeout |
+| 7 | hold |
+
+If `type == 4`: `the_double_click_was_also_a_hold = extract_bits(1)` (1 = held ≥ 1 second).
+
+If `type == 7`: `next_up_will_be_double_click = extract_bits(1)`.
+
+If `type <= 5` and `event_count[button_number]` is even: increment `event_count[button_number]` by 1 (an up/down event not preceded by hold or SCT).
+
+### Gesture detection
+
+For all `type <= 4` and `type == 6` (up and single click timeout events), extract the gesture:
+
+```
+if extract_bits(1) == 0: no gesture
+else if extract_bits(1) == 0: gesture recognized but unidentified
+else: gesture direction = {Left, Right, Up, Down}[extract_bits(2)]
+```
+
+### Accelerometer data
+
+After gesture extraction, always read the accelerometer (for all event types):
+
+```
+x = extract_bits(8)   // 8-bit signed integer
+y = extract_bits(8)
+z = extract_bits(8)
+```
+
+Convert to g-force: `g = (int8_t)value / 64.036875`
+
+### Derived event flags
+
+```c
+bool was_hold    = (type == 2) || (type == 4 && the_double_click_was_also_a_hold);
+bool single_click = (type == 1) || (type == 2);
+bool double_click = (type == 3) || (type == 4);
+```
+
+Apply the same four use cases as Flic 2 (Up/Down, Click/Hold, Single/Double, All Three) using these flags.
+
+## Sending acknowledgements
+
+Send `AckButtonEventsDuoInd` when `single_click || double_click || type == 6` is true. Always include both event counts even if only one button changed:
+
+```c
+#define OPCODE_TO_FLIC_ACK_BUTTON_EVENTS_DUO_IND 36
+struct AckButtonEventsDuoInd {
+    uint8_t opcode;
+    uint32_t event_count[2];  // current values for both buttons
+} PACKED;
+```

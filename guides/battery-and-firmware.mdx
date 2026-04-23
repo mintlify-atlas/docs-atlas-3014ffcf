@@ -1,0 +1,143 @@
+---
+title: "Battery monitoring and firmware updates for Flic 2"
+description: "Query battery voltage, interpret battery level readings, perform OTA firmware updates, and manage button names over an established Flic 2 session."
+---
+
+Once a Flic 2 session is established, your app can query the button's battery level, manage its display name, configure BLE connection parameters, and perform over-the-air firmware updates. These operations are all request-response exchanges over the existing BLE connection; no separate pairing or re-connection is required.
+
+## Battery monitoring
+
+The button exposes a raw ADC reading that you convert to a voltage. Use this voltage to determine whether the battery needs replacement.
+
+### Reading battery level
+
+Send a `GetBatteryLevelRequest` (opcode 20, direction: TO button). The button responds with a `GetBatteryLevelResponse` (opcode 20, direction: FROM button) containing a `battery_level` integer.
+
+Convert the raw reading to voltage:
+
+```text
+voltage = battery_level * 3.6 / 1024.0
+```
+
+For example, a `battery_level` of 755 gives approximately 2.65 V.
+
+### Interpreting the result
+
+Flic 2 buttons use a **CR2032** coin cell battery. The table below maps voltage to approximate charge state:
+
+| Voltage | Charge state |
+|---|---|
+| ≥ 3.0 V | Good |
+| 2.6 V – 3.0 V | Low — alert the user |
+| < 2.6 V | Replace soon — button may behave unreliably |
+
+<Warning>
+  Below 2.6 V the button may fail to complete BLE connections or drop events. Prompt the user to replace the battery before this threshold is reached.
+</Warning>
+
+## Connection parameters
+
+Tuning BLE connection parameters reduces power consumption on both the button and the host device without sacrificing responsiveness.
+
+Send a `SetConnectionParametersInd` (opcode 12, direction: TO button) with the recommended values below. These are guidelines — your platform or application requirements may call for different values.
+
+<ParamField path="body.intv_min" type="number" default="80">
+  Minimum connection interval in units of 1.25 ms. The recommended value of `80` corresponds to 100 ms.
+</ParamField>
+
+<ParamField path="body.intv_max" type="number" default="90">
+  Maximum connection interval in units of 1.25 ms. The recommended value of `90` corresponds to 112.5 ms.
+</ParamField>
+
+<ParamField path="body.latency" type="number" default="17">
+  Peripheral latency — the number of connection events the button may skip while idle. A value of `17` lets the button sleep through up to 17 events, saving battery during quiet periods.
+</ParamField>
+
+<ParamField path="body.timeout" type="number" default="800">
+  Supervision timeout in units of 10 ms. The recommended value of `800` corresponds to 8 seconds.
+</ParamField>
+
+<Note>
+  iOS imposes restrictions on BLE connection parameters. On iOS, these values are treated as hints; the system may override them. Check platform-specific documentation for the allowed ranges on each OS.
+</Note>
+
+### Auto-disconnect
+
+The `auto_disconnect_time` field in `InitButtonEventsLightRequest` tells the button how long to stay connected when it receives no events. Valid range is 0–511 seconds; `511` disables auto-disconnect entirely.
+
+If you use auto-disconnect, set it to **at least 40 seconds** to avoid premature disconnections during normal use. Shorter values can cause the button to disconnect before the user reaches for it again, resulting in a slow reconnect at the worst moment.
+
+<Tip>
+  Disable auto-disconnect (`511`) if your app needs the button to be available instantly at any time. Enable it if your app runs in the background and you want to conserve BLE radio resources.
+</Tip>
+
+## Button name management
+
+Each Flic button stores a human-readable display name that your app can read and update.
+
+| Operation | Opcode (direction) | Description |
+|---|---|---|
+| `GetNameRequest` | 11 (TO) | Request the button's current name. |
+| `GetNameResponse` | 16 (FROM) | Response containing the name string. |
+| `SetNameRequest` | 10 (TO) | Write a new name to the button. |
+| `SetNameResponse` | 17 (FROM) | Confirms the name was written. |
+| `NameUpdatedNotification` | 14 (FROM) | Sent proactively if another app changes the name while your session is active. |
+
+<Info>
+  Listen for `NameUpdatedNotification` if your app displays the button name in a UI. Another app or the Flic mobile app may rename the button while you are connected.
+</Info>
+
+## Firmware updates
+
+Firmware updates are delivered over the BLE connection using a chunked binary protocol. Perform a version check before initiating an update so you only transfer new firmware.
+
+<Steps>
+  <Step title="Check the current firmware version">
+    Send a `GetFirmwareVersionRequest` (opcode 8, direction: TO button). The button responds with a `GetFirmwareVersionResponse` (opcode 5, direction: FROM button) containing the installed version string.
+  </Step>
+
+  <Step title="Poll for available firmware">
+    Send an HTTP GET request to the Flic firmware API:
+
+    ```text
+    https://api.flic.io/api/v1/buttons/versions/firmware
+    ```
+
+    The response lists available firmware versions. Compare the latest version against the installed version from step 1. If the installed version is already current, stop here.
+  </Step>
+
+  <Step title="Download the firmware binary">
+    Fetch the firmware binary for the target version from the URL provided in the API response. Verify the file size and any checksum fields before proceeding.
+  </Step>
+
+  <Step title="Request a firmware update slot">
+    Send a `StartFirmwareUpdateRequest` (opcode 17, direction: TO button). The button responds with a `StartFirmwareUpdateResponse` (opcode 18, direction: FROM button) containing a `start_pos` field:
+
+    | `start_pos` value | Meaning |
+    |---|---|
+    | ≥ 0 | Resume or start from this byte offset. |
+    | `-1` | Invalid request — check parameters. |
+    | `-2` | An update is already in progress. |
+    | `-3` | Update already complete. |
+
+    If `start_pos` is `-2` or `-3`, do not resend the request. If it is `-1`, inspect your request parameters.
+  </Step>
+
+  <Step title="Send firmware data chunks">
+    Send `FirmwareUpdateDataInd` packets (opcode 18, direction: TO button) containing up to **64 bytes** of firmware data per packet. Start from the byte offset given by `start_pos`.
+
+    Continue sending chunks sequentially until you have sent all bytes. Do not send the next chunk until the previous one is acknowledged (follow the flow control mechanism for your BLE transport layer).
+  </Step>
+
+  <Step title="Monitor progress with FirmwareUpdateNotification">
+    The button sends `FirmwareUpdateNotification` packets (opcode 19, direction: FROM button) as it processes chunks. The `pos` field contains the number of bytes successfully written.
+
+    A `pos` value of `0` indicates a **signature verification failure** — the firmware binary is corrupt or was not signed by Flic. Abort the update and report an error.
+
+    When `pos` equals the total firmware size, the update is complete and the button will reboot.
+  </Step>
+</Steps>
+
+<Warning>
+  Do not disconnect the BLE connection while a firmware update is in progress. An interrupted update may leave the button in a recovery state that requires a retry from `start_pos`.
+</Warning>

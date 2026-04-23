@@ -1,0 +1,88 @@
+---
+title: "Binary packet format and Chaskey-LTS signing"
+description: "The Flic 2 binary packet structure: connection ID field, opcode, data, fragmentation for large packets, and Chaskey-LTS authentication signatures."
+---
+
+All communication between an app and a Flic 2 button uses a single binary packet format in both directions. Every packet begins with a two-byte header — a flags-and-connection-id byte followed by an opcode byte — then optional data bytes, and finally an optional 5-byte Chaskey-LTS signature once a session has been established. Understanding this layout is required before implementing any part of the Flic 2 protocol.
+
+## Byte #0 — flags and connection ID
+
+The first byte packs several fields into its 8 bits:
+
+| Bits | Field | Description |
+|---|---|---|
+| 0–4 | `connId` | Logical connection ID. `0` means connection-less. |
+| 5 | `newlyAssigned` | Always `0` when sent from app to button. |
+| 6 | `multiplePackets` | Set if multiple packets are included in one GATT transaction (optional feature). |
+| 7 | `fragment` | `0` = this is the last (or only) fragment. `1` = more fragments follow. |
+
+## Byte #1 — opcode
+
+The opcode identifies the packet type. Opcodes fall into four categories:
+
+| Type | Direction | Description |
+|---|---|---|
+| `REQUEST` | App → button | Expects a corresponding `RESPONSE` from the button. |
+| `RESPONSE` | Button → app | Reply to a specific `REQUEST`. |
+| `NOTIFICATION` | Button → app | Unsolicited one-way message from the button. |
+| `IND` | Either direction | One-way indication; no reply expected. |
+
+At most **2 concurrent outstanding requests** per logical connection ID are permitted. Sending a third request before two responses have been received is a protocol violation.
+
+## Packet structure
+
+```text
+[ Byte 0: flags+connId ][ Byte 1: opcode ][ data bytes... ][ 5-byte signature (optional) ]
+```
+
+The maximum reassembled packet size is **129 bytes**.
+
+## Fragmentation
+
+If a packet is too large to fit in a single GATT transaction (limited by the negotiated ATT MTU minus the 3-byte ATT header), it must be split into fragments:
+
+1. Concatenate opcode + data + signature into a contiguous byte sequence.
+2. Split the sequence into chunks that fit within the GATT payload size.
+3. Set bit 7 of byte 0 to `1` in all fragments except the last.
+4. Set bit 7 to `0` in the final fragment.
+5. Send fragments as consecutive Write Without Response operations (app → button) or consecutive Notifications (button → app).
+
+The receiver reassembles fragments in order before processing the packet.
+
+## Packet signature
+
+Once a session is established, every packet must carry a 5-byte **Chaskey-LTS** (16-round variant) signature appended after the data bytes.
+
+### Algorithm
+
+<Steps>
+  <Step title="Construct the message">
+    Concatenate:
+    - 64-bit packet counter (direction-specific, starts at 0)
+    - 64-bit direction constant: `0` = from button, `1` = to button
+    - Opcode byte
+    - Data bytes
+  </Step>
+  <Step title="Compute the MAC">
+    Run Chaskey-LTS (16-round) with the **session key** (16 bytes) as the key and the message from step 1 as input.
+  </Step>
+  <Step title="Truncate">
+    Take the first **5 bytes** of the Chaskey-LTS output as the signature.
+  </Step>
+  <Step title="Append and increment">
+    Append the 5-byte signature to the packet. Increment the per-direction packet counter by 1.
+  </Step>
+</Steps>
+
+### Packet counters
+
+There are two independent 64-bit packet counters, one per direction:
+
+| Direction | Counter |
+|---|---|
+| App → button | Starts at `0`, incremented for each packet sent by the app |
+| Button → app | Starts at `0`, incremented for each packet sent by the button |
+
+<Warning>
+  If the button receives a packet with an invalid signature, the session transitions to `STATE_FAILED`. Close the BLE connection and retry after at least 5 seconds.
+</Warning>

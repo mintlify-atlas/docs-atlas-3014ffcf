@@ -1,0 +1,77 @@
+---
+title: "BLE advertising modes and packet format for Flic 2"
+description: "How Flic 2 advertises in Private and Public modes, the BLE advertising data structure, Coded PHY support, and how to identify a button from scan results."
+---
+
+BLE advertising is how Flic 2 makes itself discoverable to host applications. The button cycles through advertising packets that encode its identity, mode, and connection state. Understanding the advertising format lets you correctly filter scan results, decode button addresses, and determine whether a button is already connected before attempting to open a new BLE connection.
+
+## Private mode
+
+In Private mode the button only advertises when it is not already connected to any device. The `ADV_IND` packet contains a single Flags data type with the **LE General Discoverable Mode** and **BR/EDR Not Supported** bits set. The `SCAN_RSP` payload is empty.
+
+<Info>
+  Private mode is the default after pairing. Only apps holding a valid pairing key can connect to a button in Private mode.
+</Info>
+
+## Public mode
+
+In Public mode the button advertises regardless of whether it already has an active connection.
+
+- **Not connected**: sends `ADV_IND` + `SCAN_RSP`
+- **Connected**: sends `ADV_SCAN_IND` + `SCAN_RSP`
+
+### ADV_IND / ADV_SCAN_IND payload
+
+The connectable or scannable advertisement contains three fields in order:
+
+| # | Field | Value |
+|---|---|---|
+| 1 | Flags | LE General Discoverable Mode + BR/EDR Not Supported |
+| 2 | Complete List of 128-bit Service UUIDs | `00420000-8F59-4420-870D-84F3B617E493` |
+| 3 | Complete Local Name | 8-character string — see format below |
+
+### Complete Local Name format
+
+The 8-character name encodes the firmware version and part of the BLE address:
+
+```text
+F2<FW><ADDR>
+```
+
+| Segment | Length | Content |
+|---|---|---|
+| `F2` | 2 chars | Fixed prefix identifying a Flic 2 |
+| `<FW>` | 2 chars | Firmware version as a two-digit decimal string |
+| `<ADDR>` | 4 chars | 24 least-significant bits of the BT address, Base64URL-encoded |
+
+**Example:** firmware version 7, address `XX:XX:XX:76:42:06` → name `F207dkIG`
+
+The Base64URL encoding of the 24 LSB `76 42 06` (little-endian byte order `06 42 76`) produces `dkIG`, giving the full name `F207dkIG`.
+
+### SCAN_RSP payload
+
+The scan response contains Manufacturer Specific Data:
+
+```text
+Company ID: 0x030f  →  bytes: 0f 03
+Payload:    02 XX XX XX YY
+```
+
+| Byte(s) | Content |
+|---|---|
+| `02` | Fixed length prefix |
+| `XX XX XX` | 24 most-significant bits of the BT address, little-endian |
+| `YY` | Bitfield: bit 0 = address type (0 = Public, 1 = Static Random); bit 1 = already connected (0 if `ADV_IND`, 1 if `ADV_SCAN_IND`) |
+
+## Coded PHY
+
+By default, the button also advertises on the Coded PHY for extended range:
+
+- **Not connected**: Connectable Undirected advertising
+- **Connected**: Non-Connectable Non-Scannable with an auxiliary packet
+
+The auxiliary packet is a concatenation of all data fields described above. You can disable Coded PHY advertising using `SetAdvParametersRequest` (requires firmware ≥ v7).
+
+<Note>
+  Buttons only advertise when pressed, or when actively in Public mode. If you are scanning and do not see a button, confirm the user has pressed and held to activate Public mode.
+</Note>

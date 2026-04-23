@@ -1,0 +1,152 @@
+---
+title: "Pairing and quick verify for Flic Duo"
+description: "Protocol changes for Full Verify and Quick Verify when connecting to Flic Duo: the supports_duo bit, modified key derivation, is_duo detection, and color field."
+---
+
+Pairing with a Flic Duo follows the same full verify and quick verify flows as Flic 2, with two small but critical modifications: a `supports_duo` flag in the request structs, and a changed byte in the key derivation hash inputs. These changes unlock the Flic Duo feature set and signal to the button that your implementation understands the extended protocol.
+
+<Warning>
+  If you implement the Flic Duo extension, you must change the derivation byte in both Full Verify and Quick Verify. Using the wrong byte will produce an invalid session key and the connection will fail.
+</Warning>
+
+## Full verify changes
+
+### FullVerifyRequest2
+
+The `rfu` byte in `FullVerifyRequest2` is repurposed. Set `supports_duo = 1`:
+
+```c
+struct FullVerifyRequest2 {
+    uint8_t opcode;
+    uint8_t ecdh_public_key[32];
+    uint8_t random_bytes[8];
+    uint8_t rfu          : 7;
+    uint8_t supports_duo : 1;   // set to 1
+    uint8_t verifier[16];
+} PACKED;
+```
+
+### Key derivation change
+
+The base Flic 2 specification derives `fullVerifySecret` by appending a `0x00` byte at the end of the SHA-256 input. When `supports_duo = 1`, use `0x80` instead:
+
+```c
+// Base Flic 2:
+fullVerifySecret = SHA256(curve25519SharedSecret || sigBits || random_bytes || clientRandomBytes || 0x00);
+
+// Flic Duo extension:
+fullVerifySecret = SHA256(curve25519SharedSecret || sigBits || random_bytes || clientRandomBytes || 0x80);
+```
+
+All subsequent HMAC derivations (verifier, sessionKey, pairing id/key) use this updated `fullVerifySecret`.
+
+### FullVerifyResponse2 (extended)
+
+```c
+struct FullVerifyResponse2 {
+    uint8_t opcode;
+    uint8_t app_credentials_match : 1;
+    uint8_t cares_about_app_credentials : 1;
+    uint8_t is_duo : 1;         // 1 = Flic Duo, 0 = Flic 2
+    uint8_t rfu : 5;
+    uint8_t button_uuid[16];
+    uint8_t name_len;
+    char    name[23];
+    uint32_t firmware_version;
+    uint16_t battery_level;
+    char    serial_number[11];
+    char    color[16];          // null-terminated: "black" or "white"
+} PACKED;
+```
+
+<Note>
+  If the request had `supports_duo = 0`, the `is_duo` field will always be 0 even if the device is a Flic Duo. Always set `supports_duo = 1` to correctly detect Flic Duo devices.
+</Note>
+
+## Quick verify changes
+
+### QuickVerifyRequest
+
+```c
+struct QuickVerifyRequest {
+    uint8_t opcode;
+    uint8_t random_client_bytes[7];
+    uint8_t rfu0         : 6;
+    uint8_t supports_duo : 1;   // set to 1
+    uint8_t rfu1         : 1;
+    uint32_t tmp_id;
+    uint32_t pairing_identifier;
+} PACKED;
+```
+
+### Session key derivation change
+
+The base Flic 2 protocol forms the 16-byte Chaskey input message as:
+
+```
+random_client_bytes (7) || 0x00 (1) || random_button_bytes (8)
+```
+
+When `supports_duo = 1`, replace the `0x00` byte with `0x40`:
+
+```
+random_client_bytes (7) || 0x40 (1) || random_button_bytes (8)
+```
+
+### QuickVerifyResponse (extended)
+
+```c
+struct QuickVerifyResponse {
+    uint8_t opcode;
+    uint8_t random_button_bytes[8];
+    uint32_t tmp_id;
+    uint8_t link_is_encrypted : 1;
+    uint8_t has_bond_info     : 1;
+    uint8_t is_duo            : 1;  // 1 = Flic Duo
+    uint8_t rfu               : 5;
+} PACKED;
+```
+
+## Get color mid-session
+
+Once a session is established, you can query the button's color at any time:
+
+```c
+#define OPCODE_TO_FLIC_GET_COLOR_REQUEST 40
+struct GetColorRequest { uint8_t opcode; } PACKED;
+
+#define OPCODE_FROM_FLIC_GET_COLOR_RESPONSE 34
+struct GetColorResponse { uint8_t opcode; char color[16]; } PACKED;
+```
+
+The `color` field is a null-terminated ASCII string. Current values: `"black"`, `"white"`.
+
+## Flic Duo firmware update
+
+Flic Duo uses a different firmware update procedure from Flic 2. The backend endpoint `https://api.flic.io/api/v1/buttons/versions/firmware3` must be used instead of the standard endpoint. If `is_duo` is 0, continue with the standard firmware update flow from [utility packets](/protocol/utility-packets#firmware-update). If `is_duo` is 1, use the following packets:
+
+The firmware binary is split into two parts: the first 76 bytes are the `header` and the remaining bytes are the `data`.
+
+```c
+#define OPCODE_TO_FLIC_START_FIRMWARE_UPDATE_DUO_REQUEST 38
+struct StartFirmwareUpdateDuoRequest {
+    uint8_t  opcode;
+    uint32_t len;               // length of the data portion (not including header)
+    uint8_t  header[76];        // first 76 bytes of the firmware file
+    uint16_t status_interval;   // recommended: 2 for optimal performance
+} PACKED;
+```
+
+The button responds with the standard `StartFirmwareUpdateResponse` (opcode 18). A `start_pos` of -1 means invalid parameters; -2 means an update is already in progress; -3 means already complete.
+
+Then send the remaining firmware `data` in chunks using `FirmwareUpdateDataDuoInd`:
+
+```c
+#define OPCODE_TO_FLIC_FIRMWARE_UPDATE_DATA_DUO_IND 39
+struct FirmwareUpdateDataDuoInd {
+    uint8_t opcode;
+    uint8_t data[];   // max 110 bytes per chunk recommended
+} PACKED;
+```
+
+Progress notifications use the same `FirmwareUpdateNotification` packet (opcode 19 FROM) as Flic 2. For best performance, do not have more than 550 bytes of unacknowledged data outstanding. After a successful update, send `ForceBtDisconnectInd` with `restart = true` to trigger advertising, then disconnect so the button reboots.

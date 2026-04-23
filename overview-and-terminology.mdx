@@ -1,0 +1,144 @@
+---
+title: "Technical overview and key concepts for Flic 2"
+description: "Understand Flic 2 connection states, trigger modes, privacy modes, the verification process, and battery/LED behavior before implementing."
+---
+
+Before writing code that interacts with Flic 2 buttons, it helps to understand how the protocol and libraries model the button lifecycle. This page covers the core concepts — from how buttons advertise their presence over BLE, through the verification handshake that confirms authenticity, to the trigger mode settings that control which click events your app receives.
+
+## Connection states
+
+A Flic button moves through four distinct connection states. Understanding these transitions lets you build apps that handle connectivity gracefully and avoid unnecessary power consumption.
+
+### Advertising
+
+When a Flic is not connected to any device, it makes itself discoverable by broadcasting BLE advertisements. Advertising begins when the user presses the button and continues until a device connects or the button reaches its timeout threshold. A flashing orange LED indicates active advertising (red if no pairings are stored). The button is discoverable but not yet exchanging data.
+
+### Pending connection
+
+A pending connection is an open-ended request from the host device that waits for a specific Flic to appear in range. Once the host detects the button's advertisement, it connects immediately. This state is entered automatically when a button that was previously connected drops its connection, or when your code explicitly calls the connect method on a button object. No timeout applies — the device keeps watching indefinitely.
+
+### Connected
+
+In the connected state, the Flic and the host device can exchange data. However, connected is not the same as ready to use. The button only begins delivering click events after the verification process completes, which is signaled by a ready callback. Verification typically takes only a few milliseconds after the connection is established.
+
+### Disconnected
+
+The disconnected state means the button and host device are neither connected nor searching for each other. This state consumes no power on the host and minimal power on the button, provided the button is not actively advertising. If your application no longer needs a button (for example, when it moves to the background), disconnecting explicitly keeps power usage low on both sides.
+
+## Flic trigger modes
+
+When a user interacts with a Flic button, the library can emit up to five distinct events:
+
+- **Down** — fired the moment the button is physically pressed.
+- **Up** — fired when the button is released.
+- **Click** — fired after a full press-and-release cycle with no hold or double-click detected.
+- **Double click** — fired when two clicks occur in quick succession.
+- **Hold** — fired when the button is held down for a sustained period.
+
+Down and Up events are always available regardless of the trigger mode setting. The three trigger modes control how Click, Double Click, and Hold are combined:
+
+- **Mode 1** — Click only. Optimized for applications that only need a single-click action. Events fire with minimal latency.
+- **Mode 2** — Click and Hold. The library distinguishes between a short press and a long press.
+- **Mode 3** — Click, Double Click, and Hold. All five event types are active. Because the library must wait to rule out a double-click before firing a single-click event, single-click latency is slightly higher in this mode.
+
+Consult the platform-specific API documentation for the exact enum values and configuration method for each library.
+
+## Verification process
+
+All Flic buttons must pass a cryptographic verification before the library delivers any click events. This protects against fake hardware spoofing genuine buttons and ensures that events reaching your app come from the specific physical button your user paired.
+
+The verification serves two purposes:
+- The app confirms the Flic is a genuine button it is allowed to communicate with.
+- The Flic confirms the app is the legitimate software it was previously paired with (on reconnection).
+
+### Full verification
+
+Full verification (also called pairing setup) runs once per button, the first time it connects to a new device. During this process, the button and the app complete a cryptographic key exchange. The resulting keys are stored and reused on all future connections. When full verification succeeds, the library fires the ready callback and begins delivering events. If anything goes wrong, an error callback is sent instead.
+
+### Quick verification
+
+Quick verification (pairing verification) runs every time a previously paired Flic reconnects, regardless of why the connection dropped. It uses the keys established during full verification to confirm that the reconnecting device is the same physical button and not a replay or spoofed connection. Quick verification typically completes in a few milliseconds. If it fails, the library sends an error callback.
+
+## Privacy modes
+
+Flic buttons operate in one of two privacy modes that control whether new pairings can be created.
+
+**Public mode** is a temporary state. While in public mode, the button advertises a pairing service identifier that the library's scan wizard can detect, making the button discoverable for new pairings. Public mode lasts up to 30 seconds before the button automatically returns to private mode.
+
+**Private mode** is the default state. In private mode, the button does not advertise the pairing service identifier, so it cannot be discovered by the scan wizard. Only apps that already hold valid pairing keys can connect. This prevents apps from accidentally pairing with buttons that belong to someone else.
+
+### Switching between modes
+
+To move a button from private mode to public mode:
+
+- Press and hold for at least 6 seconds (standard procedure).
+- Press and hold for at least 1.5 seconds if the button is brand new or has just been factory reset.
+
+Once public mode is active, the button stays discoverable for up to 30 seconds, then reverts to private automatically.
+
+<AccordionGroup>
+  <Accordion title="Factory reset procedure">
+    A factory reset clears all stored pairings and returns the button to its default settings. The button will need to go through full verification again with any app that wants to use it.
+
+    <Steps>
+      <Step title="Remove the battery">
+        Open the battery compartment and take out the battery.
+      </Step>
+      <Step title="Reinsert the battery">
+        Put the battery back in. The clock starts now — you have 5 seconds to complete the next step.
+      </Step>
+      <Step title="Hold the button for 10 seconds">
+        Within 5 seconds of reinserting the battery, press and hold the button for at least 10 seconds. When you release, the button disconnects from any connected device, erases its memory, and reboots. A series of red LED blinks confirms the reset completed.
+      </Step>
+    </Steps>
+
+    <Warning>
+      A factory reset permanently removes all stored pairings. Any device that was connected to this button will need to re-pair from scratch.
+    </Warning>
+  </Accordion>
+
+  <Accordion title="Battery usage tips">
+    The key principle is to choose the most power-conservative connection strategy that your application can support.
+
+    - Disconnect the button when your app goes to the background, unless you need background event delivery. An active BLE connection consumes power on both the button and the host device.
+    - Avoid polling or maintaining connections to buttons that are not currently in use.
+    - If you are building a foreground-only application (such as a real-time game controller), disconnect the button when the app is no longer in focus.
+    - The LED is the single most power-hungry component on the button. Trigger LED feedback sparingly and only when it provides clear value to the user.
+  </Accordion>
+
+  <Accordion title="On board LED behavior">
+    The Flic button has a single LED that signals its current state:
+
+    - **Orange, flashing** — the button is advertising and waiting for a connection.
+    - **Red, flashing** — the button is advertising but has no stored pairings (factory new or reset).
+    - **Green, blink on press** — the button is connected and a press was registered.
+
+    Because the LED consumes significantly more power than any other component, avoid triggering LED feedback at high frequency. Use it to confirm actions that matter to the user, not as ambient status indication.
+
+    <Tip>
+      When developing, LED behavior is a useful diagnostic. If pressing a button produces an orange flash rather than a green blink, the button is not connected to your app.
+    </Tip>
+  </Accordion>
+
+  <Accordion title="Scanning best practices">
+    Each platform library includes a scan wizard that handles discovery and pairing of new buttons. The scan wizard should only be invoked when a user explicitly requests to add a new button — for example, by tapping an "Add button" action in your UI.
+
+    - Do not run automatic or scheduled scans.
+    - Do not scan in the background of a mobile app.
+    - Stop the scan as soon as the user cancels or a button is successfully paired.
+
+    Background scanning drains battery on the host device and can cause unexpected pairing attempts with nearby buttons that belong to other users.
+  </Accordion>
+
+  <Accordion title="Network data usage">
+    The library uses a network connection for one purpose only: checking whether a firmware update is available for connected buttons. No button event data, pairing keys, or user information is transmitted over the network.
+
+    For bulk or white-label orders of Flic buttons, you can configure whether firmware updates are pushed automatically or held for your own quality assurance review before deployment.
+  </Accordion>
+
+  <Accordion title="Firmware updates">
+    The library periodically polls the Flic backend to check for new firmware versions. When an update is available, it is applied automatically in the background over the BLE connection. This process is transparent to the user and does not interrupt button functionality.
+
+    For enterprise or white-label deployments, update timing can be controlled at the order level — for example, to allow internal testing before rolling out a new firmware version to your button fleet.
+  </Accordion>
+</AccordionGroup>

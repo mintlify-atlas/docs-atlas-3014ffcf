@@ -1,0 +1,178 @@
+---
+title: "Button event notification packets in Flic 2"
+description: "Packet reference for initializing button events, receiving ButtonEventNotification, decoding the event_encoded field, and sending acknowledgements."
+---
+
+Button events are the core output of a Flic 2 button. Once a session is established, your app sends an `InitButtonEventsLightRequest` to subscribe, then receives `ButtonEventNotification` packets containing one or more encoded events. You must decode the `event_encoded` field and send an `AckButtonEventsInd` when appropriate.
+
+## Initializing button events
+
+Send this packet after `STATE_SESSION_ESTABLISHED` before the button will emit any events:
+
+```c
+#define OPCODE_TO_FLIC_INIT_BUTTON_EVENTS_LIGHT_REQUEST 23
+struct InitButtonEventsLightRequest {
+    uint8_t opcode;
+    uint32_t event_count;
+    uint32_t boot_id;
+    uint64_t auto_disconnect_time : 9;   // 511 = disabled
+    uint64_t max_queued_packets : 5;     // 0–30; 31 = no limit
+    uint64_t max_queued_packets_age : 20; // seconds; 0xfffff = no limit
+    uint64_t rfu : 6;
+} PACKED;
+```
+
+<ParamField path="event_count" type="uint32">
+  Last known event count from persistent storage. Set to 0 on first connection; the button will not re-send events already acknowledged.
+</ParamField>
+<ParamField path="boot_id" type="uint32">
+  Last known boot ID from persistent storage. Set to 0 on first connection. If the button has rebooted since last session, queued events restart from 0.
+</ParamField>
+<ParamField path="auto_disconnect_time" type="uint9 (0–511)">
+  Seconds of inactivity before the button auto-disconnects the BLE link. Use 511 to disable. Recommended minimum is 40 seconds if used, to save button battery.
+</ParamField>
+<ParamField path="max_queued_packets" type="uint5 (0–31)">
+  Maximum number of queued packets to deliver. 0–30 limits to the N most recent; 31 means no limit.
+</ParamField>
+<ParamField path="max_queued_packets_age" type="uint20 (0–0xfffff)">
+  Maximum age in seconds for queued packets to be delivered. 0xfffff means no limit.
+</ParamField>
+
+### Init response variants
+
+The button replies with one of two packets depending on whether it knows its boot ID:
+
+```c
+#define OPCODE_FROM_FLIC_INIT_BUTTON_EVENTS_RESPONSE_WITH_BOOT_ID 10
+struct InitButtonEventsResponseWithBootId {
+    uint8_t opcode;
+    uint64_t has_queued_events : 1;
+    uint64_t timestamp : 47; // 1/32768 seconds since boot
+    uint32_t event_count;
+    uint32_t boot_id;
+} PACKED;
+
+#define OPCODE_FROM_FLIC_INIT_BUTTON_EVENTS_RESPONSE_WITHOUT_BOOT_ID 11
+struct InitButtonEventsResponseWithoutBootId {
+    uint8_t opcode;
+    uint64_t has_queued_events : 1;
+    uint64_t timestamp : 47; // 1/32768 seconds since boot
+    uint32_t event_count;
+} PACKED;
+```
+
+If `has_queued_events` is 1, one or more `ButtonEventNotification` packets will follow immediately. Store the returned `event_count` and `boot_id` in persistent storage.
+
+## Button event notification
+
+```c
+struct ButtonEventNotificationItem {
+    uint64_t timestamp : 48;      // 1/32768 seconds since boot
+    uint64_t event_encoded : 4;
+    uint64_t was_queued : 1;
+    uint64_t was_queued_last : 1;
+    uint64_t rfu : 2;
+} PACKED;
+
+#define OPCODE_FROM_FLIC_BUTTON_EVENT_NOTIFICATION 12
+struct ButtonEventNotification {
+    uint8_t opcode;
+    uint32_t event_count;         // corresponds to last item in events[]
+    struct ButtonEventNotificationItem events[];
+} PACKED;
+```
+
+The `was_queued_last` bit in any item marks the final queued event — after that, events are live. After processing all items, update `event_count` in persistent storage.
+
+### event_count semantics
+
+`event_count % 4` encodes the event type of the last item:
+
+| Value | Type |
+|-------|------|
+| 1 | down |
+| 2 | hold |
+| 3 | up |
+| 0 | single click timeout |
+
+`event_count / 4` approximates the total number of clicks.
+
+## Decoding event_encoded
+
+The 4-bit `event_encoded` field is decoded as follows:
+
+```c
+uint8_t type = event_encoded & 0x03; // 0=up, 1=down, 2=single_click_timeout, 3=hold
+bool wasHold = false, singleClick = false, doubleClick = false, nextUpWillBeDoubleClick = false;
+
+if (event_encoded & 0x08) {          // bit 3 set
+    type = 0;                        // always "up"
+    wasHold       = (event_encoded & 0x04) != 0;
+    singleClick   = (event_encoded & 0x02) != 0 && (event_encoded & 0x01) == 0;
+    doubleClick   = (event_encoded & 0x02) != 0 && (event_encoded & 0x01) != 0;
+} else if (event_encoded == 7) {
+    nextUpWillBeDoubleClick = true;
+}
+```
+
+## Four trigger mode use cases
+
+Choose the use case that matches your application:
+
+<Tabs>
+  <Tab title="Up / Down">
+    Emit events on every press and release.
+
+    | Condition | Event |
+    |-----------|-------|
+    | `type == 0` | Button up |
+    | `type == 1` | Button down |
+  </Tab>
+  <Tab title="Click / Hold">
+    Distinguish a short press from a long press.
+
+    | Condition | Event |
+    |-----------|-------|
+    | `type == 0 && !wasHold` | Click |
+    | `type == 3` | Hold |
+  </Tab>
+  <Tab title="Single / Double Click">
+    Distinguish one press from two rapid presses.
+
+    | Condition | Event |
+    |-----------|-------|
+    | `(type == 0 && singleClick) \|\| type == 2` | Single click |
+    | `type == 0 && doubleClick` | Double click |
+  </Tab>
+  <Tab title="Single / Double / Hold">
+    All three event types combined.
+
+    | Condition | Event |
+    |-----------|-------|
+    | `(!wasHold && singleClick) \|\| type == 2` | Single click |
+    | `doubleClick` | Double click |
+    | `type == 3 && !nextUpWillBeDoubleClick` | Hold |
+  </Tab>
+</Tabs>
+
+## Sending acknowledgements
+
+After processing each `ButtonEventNotification`, send an acknowledgement if the following is true:
+
+```c
+bool needsAck = (type == 0 && (singleClick || doubleClick)) || type == 2;
+```
+
+Only one `AckButtonEventsInd` is needed per notification packet, regardless of how many items it contained:
+
+```c
+#define OPCODE_TO_FLIC_ACK_BUTTON_EVENTS_IND 16
+struct AckButtonEventsInd {
+    uint8_t opcode;
+    uint32_t event_count; // same value as in the ButtonEventNotification
+} PACKED;
+```
+
+<Note>
+  Always update persistent storage with the latest `event_count` and `boot_id` after each notification, even if no acknowledgement is required. This prevents duplicate delivery of events on reconnection.
+</Note>
